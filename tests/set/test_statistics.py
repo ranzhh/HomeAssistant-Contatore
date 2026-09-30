@@ -111,6 +111,22 @@ def test_kconstant_diversa_da_uno_non_moltiplica(caplog):
     assert "kConstant" in caplog.text
 
 
+def test_segnaposto_estimated_senza_quarters_non_diventa_zero():
+    """Forma reale di un'ora non ancora pubblicata (30/09/2026): NON va
+    scritta come 0 kWh, altrimenti il giorno risulterebbe importato."""
+    ore = [
+        {"year": 2026, "month": 9, "day": 20, "hour": 0, "total": 0.0, "estimated": True},
+        _ora(1, [0.1] * 4),
+    ]
+    risultato = dict(st._aggrega_per_ora(GIORNO, ore))
+    assert list(risultato) == [datetime(2026, 9, 20, 1, 0, tzinfo=UTC)]
+
+
+def test_stimato_con_quarters_viene_importato():
+    ore = [_ora(0, [0.1] * 4, estimated=True)]
+    assert len(st._aggrega_per_ora(GIORNO, ore)) == 1
+
+
 def test_risposta_vuota_da_lista_vuota():
     assert st._aggrega_per_ora(GIORNO, []) == []
 

@@ -46,7 +46,13 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from ...const import DOMAIN
-from .api import SetApiClient, SetApiError, SetApiUnauthorized, scegli_profilo
+from .api import (
+    SetApiClient,
+    SetApiError,
+    SetApiUnauthorized,
+    giorno_pubblicato,
+    scegli_profilo,
+)
 from .auth import (
     SetAuthClient,
     SetAuthError,
@@ -372,7 +378,9 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
                         f"Errore recuperando la curva SET per il POD {pod}, giorno {giorno}: {err}"
                     ) from err
 
-                if not vista:
+                if not giorno_pubblicato(vista):
+                    # Vuoto, 404, o i 24 segnaposto "estimated" di un giorno
+                    # non ancora pubblicato (vedi api.py): in coda.
                     self._accoda_giorno(pod, giorno)
                     continue
 
@@ -392,6 +400,38 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
             }
 
         return {"by_pod": by_pod}
+
+    async def _async_mesi_senza_dettaglio(
+        self, api: SetApiClient, pod: str, giorni: list[date]
+    ) -> set[tuple[int, int]]:
+        """(anno, mese) toccati da `giorni` per cui la vista anno dice che
+        NON c'e' il dettaglio (drillDownAvailable false) o l'anno non
+        esiste (404): una chiamata per anno risparmia fino a 30 chiamate a
+        vuoto per ogni mese senza curva (contatore 1G, periodo precedente
+        all'installazione del 2G...). Se la vista anno fallisce per altri
+        motivi non si salta nulla: meglio qualche chiamata in piu' che
+        perdere dati."""
+        anni = sorted({g.year for g in giorni})
+        mesi_richiesti = {(g.year, g.month) for g in giorni}
+        fiscal_code, profile = await self._async_identita(api)
+        contract_id = await self._async_contract_id(api, pod)
+        da_saltare: set[tuple[int, int]] = set()
+        for anno in anni:
+            try:
+                mesi = await api.async_get_consumption_year(
+                    fiscal_code, contract_id, pod, profile, anno
+                )
+            except SetApiError as err:
+                _LOGGER.debug("Vista anno %d non disponibile (%s): non salto nulla", anno, err)
+                continue
+            drillabili = {
+                int(m["month"]) for m in mesi
+                if isinstance(m, dict) and m.get("drillDownAvailable") and m.get("month")
+            }
+            da_saltare |= {
+                (a, m) for (a, m) in mesi_richiesti if a == anno and m not in drillabili
+            }
+        return da_saltare
 
     # ------------------------------------------------------------------
     # Recupero storico manuale (azione contatore_letture.recupera_storico)
@@ -445,7 +485,16 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
 
         for pod_corrente in pod_da_recuperare:
             trovati = 0
+            mesi_da_saltare = await self._async_mesi_senza_dettaglio(api, pod_corrente, giorni)
+            if mesi_da_saltare:
+                _LOGGER.info(
+                    "POD %s: salto i mesi senza dettaglio a 15 minuti (drillDownAvailable "
+                    "false o anno assente): %s",
+                    pod_corrente, ", ".join(f"{a}-{m:02d}" for a, m in sorted(mesi_da_saltare)),
+                )
             for giorno in giorni:
+                if (giorno.year, giorno.month) in mesi_da_saltare:
+                    continue
                 try:
                     api, vista = await self._async_vista_giorno(api, pod_corrente, giorno)
                 except (SetApiError, SetAuthError) as err:
@@ -454,7 +503,7 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
                     )
                     fallimenti.append(f"{pod_corrente}/{giorno}: {err}")
                     continue
-                if not vista:
+                if not giorno_pubblicato(vista):
                     continue
                 await async_import_curva_giorno(self.hass, pod_corrente, giorno, vista)
                 self._rimuovi_dalla_coda(pod_corrente, [giorno])

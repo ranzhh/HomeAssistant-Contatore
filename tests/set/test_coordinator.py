@@ -85,7 +85,22 @@ def _api(viste: dict[date, list] | None = None, errore=None):
         return (viste or {}).get(giorno, [])
 
     api.async_get_consumption_day = AsyncMock(side_effect=_giorno)
+    # vista anno: di default tutti i mesi drillabili
+    api.async_get_consumption_year = AsyncMock(
+        side_effect=lambda fc, cid, pod, prof, anno: [
+            {"year": anno, "month": m, "drillDownAvailable": True, "total": 1.0} for m in range(1, 13)
+        ]
+    )
     return api
+
+
+def _segnaposto(giorno: date) -> list[dict]:
+    """Forma reale di un giorno non ancora pubblicato (30/09/2026)."""
+    return [
+        {"year": giorno.year, "month": giorno.month, "day": giorno.day, "hour": h,
+         "total": 0.0, "estimated": True}
+        for h in range(24)
+    ]
 
 
 class TestLogin:
@@ -193,6 +208,23 @@ class TestUpdateData:
         assert set(code[POD_A]) == {"2026-09-17"}
         _no_statistiche.assert_not_awaited()
 
+    async def test_giorno_con_soli_segnaposto_va_in_coda_e_non_viene_importato(
+        self, coordinator, _no_statistiche
+    ):
+        """Il caso reale del giorno corrente: 24 elementi estimated senza
+        quarters. Prima di questa correzione sarebbero finiti nelle
+        statistiche come 24 ore a zero e il giorno sarebbe uscito dalla coda."""
+        atteso = date(2026, 9, 17)
+        coordinator._async_login = AsyncMock(return_value=_api({atteso: _segnaposto(atteso)}))
+
+        with freeze_time("2026-09-18 20:00:00"):
+            dati = await coordinator._async_update_data()
+            code = coordinator._leggi_code()
+
+        assert dati["by_pod"][POD_A]["ultimo_giorno_importato"] is None
+        assert set(code[POD_A]) == {"2026-09-17"}
+        _no_statistiche.assert_not_awaited()
+
     async def test_senza_nulla_da_chiedere_non_fa_login(self, coordinator, monkeypatch, _no_statistiche):
         monkeypatch.setattr(
             mod, "async_get_ultima_data_disponibile", AsyncMock(return_value=date(2026, 9, 17))
@@ -274,6 +306,33 @@ class TestRecuperaStorico:
     async def test_nessun_giorno_disponibile_fa_fallire_l_azione(self, coordinator, _no_statistiche):
         with pytest.raises(HomeAssistantError, match="[Nn]essun"):
             await coordinator.async_recupera_storico(DATA_DA, DATA_A)
+
+    async def test_salta_i_mesi_senza_dettaglio(self, coordinator, _no_statistiche):
+        """Vista anno con drillDownAvailable false per luglio: i 31 giorni
+        di luglio non vengono nemmeno chiesti; agosto si."""
+        viste = {date(2026, 8, 1): _vista_giorno(date(2026, 8, 1))}
+        api = _api(viste)
+        api.async_get_consumption_year = AsyncMock(return_value=[
+            {"year": 2026, "month": 7, "drillDownAvailable": False, "total": 100.0},
+            {"year": 2026, "month": 8, "drillDownAvailable": True, "total": 100.0},
+        ])
+        coordinator._async_login = AsyncMock(return_value=api)
+
+        await coordinator.async_recupera_storico(date(2026, 7, 1), date(2026, 8, 2))
+
+        giorni_chiesti = [c.args[4] for c in api.async_get_consumption_day.await_args_list]
+        assert giorni_chiesti == [date(2026, 8, 1), date(2026, 8, 2)]
+        api.async_get_consumption_year.assert_awaited_once()
+
+    async def test_vista_anno_in_errore_non_salta_nulla(self, coordinator, _no_statistiche):
+        viste = {date(2026, 7, 1): _vista_giorno(date(2026, 7, 1))}
+        api = _api(viste)
+        api.async_get_consumption_year = AsyncMock(side_effect=SetApiError("500"))
+        coordinator._async_login = AsyncMock(return_value=api)
+
+        await coordinator.async_recupera_storico(date(2026, 7, 1), date(2026, 7, 2))
+
+        assert api.async_get_consumption_day.await_count == 2
 
     async def test_successo_importa_un_giorno_per_chiamata(self, coordinator, _no_statistiche):
         viste = {g: _vista_giorno(g) for g in (date(2026, 7, 1), date(2026, 7, 2))}

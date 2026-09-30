@@ -257,10 +257,28 @@ Elemento della vista giorno (valori reali, identificativi omessi):
 - `estimated`: `false` ovunque nella cattura. I valori stimati vengono
   importati comunque (import idempotente: il dato reale, quando arriva,
   sostituisce quello stimato per la stessa ora).
-- Un giorno non pubblicato: nella cattura la vista mensile
-  semplicemente **non conteneva** il giorno corrente. La vista giorno
-  per un giorno assente non è stata osservata: `api.py` tratta sia
-  `consumptions: []` sia `null` come "niente ancora" (non un errore).
+- **Un giorno non ancora pubblicato NON torna vuoto** (verificato il
+  30/09/2026 chiedendo il giorno stesso): la vista giorno risponde 200
+  con **24 segnaposto** `{"year","month","day","hour","total": 0.0,
+  "estimated": true}` **senza `quarters`**, e `data.total = 0.0`. La
+  vista mensile invece non contiene proprio il giorno. Quindi "c'è il
+  dato" ⇔ "almeno un elemento ha `quarters`" (`api.giorno_pubblicato`):
+  importare i segnaposto scriverebbe 24 ore a zero e il giorno
+  sparirebbe dalla coda. `statistics.py` scarta ogni elemento
+  `estimated` senza `quarters`.
+- **Anno/mese senza nessun dato → HTTP 404** `{"statusCode": 404,
+  "message": "Resource not found"}` (verificato sulla vista anno 2023).
+  `api.py` lo tratta come lista vuota sulle viste di consumo, non come
+  errore.
+- **Profondità dello storico** (contatore della cattura, 2G): vista anno
+  2025 con 12 mesi tutti `drillDownAvailable: true`; 2024 con 11 mesi di
+  cui solo 3 drillabili (i dati a 15 minuti partono da ottobre 2024,
+  presumibilmente l'installazione del 2G); 2023 → 404. La vista mese di
+  settembre 2025 aveva 30 giorni. `recupera_storico` legge la vista anno
+  e salta i mesi non drillabili invece di chiedere 30 giorni a vuoto.
+- `consumptionRange=PEAK_OFF_PICK` sulla vista giorno: stessa identica
+  forma di `F1_F2_F3` (verificato), il parametro non influisce sulla
+  curva.
 
 **Ritardo di pubblicazione** — una sola osservazione: alle **17:56
 locali del 30/09/2026** la vista mensile aveva tutti i giorni fino al
@@ -288,8 +306,23 @@ misura = kWh, Anno, Mese) poi `Giorno | Da ora | A ora | Valore |
 Costante K | Matricola Contatore`, 96 righe per giorno, `Giorno` in
 `dd/mm/yyyy`, ore `HH:MM`, `Valore` con la virgola decimale (es. `0,020`),
 K = 1; un secondo foglio `Energia Reattiva Q1` ha lo stesso layout.
-Non usato dall'integrazione (la vista giorno dà gli stessi numeri in
-JSON), ma è la conferma indipendente dell'unità di misura.
+Verificato il 30/09/2026 anche su agosto 2026: 2976 righe (31 × 96) nel
+foglio attiva, e la **somma dei `Valore` coincide al millesimo con la
+somma dei `total` della vista mese JSON** (267,259 kWh). È l'unica strada
+a **una chiamata per mese** per la curva a 15 minuti: candidata per un
+`recupera_storico` più economico (≈1 chiamata/mese invece di ~30). Non
+usata dall'integrazione per ora: parsare l'xlsx richiede `openpyxl`, che
+non è tra i `requirements` del manifest (pcf_common lo importa solo in
+modo lazy in una funzione non usata dal coordinator), oppure un mini
+parser zip+XML con la sola libreria standard. Da decidere col maintainer.
+
+### Altri endpoint provati dal vivo (30/09/2026)
+
+| Endpoint | Esito |
+|---|---|
+| `GET /secure/utility/{CF}/consumption/excel/{year}/{month}?profile=` ("tutte le forniture", dal bundle) | **404** con `month` sia 0-based sia 1-based: non disponibile per un profilo Retail_SET |
+| `GET /secure/utility/{CF}/{contractId}/{meterSerialNumber}/meter-read?profile=&year=` | **404** per 2025 e 2026 (`pdc` = contractId è un'ipotesi: potrebbe essere un altro identificativo) |
+| `GET .../{contractId}/totalizers/excel?consumptionType=A1&master=true&year=&month=` (0-based) | **200**: xlsx `Totalizzatori_<POD>_<mese>_<anno>.xlsx` con una riga per giorno e le **letture cumulative di registro** per fascia (`Fascia F1..F6`, `Totale`) — il delta giornaliero del `Totale` è il consumo del giorno: un cross-check gratuito della curva, non usato |
 
 ### Altri endpoint del bundle — MAI chiamati, non verificati
 
@@ -333,7 +366,10 @@ solo come mappa per chi volesse esplorare oltre.
   se un `contractId` manca (POD aggiunto dalle opzioni, entry vecchia)
   si ririsolve da `active` e si persiste.
 - **`recupera_storico`**: un giorno alla volta, limite di cortesia
-  auto-imposto di 366 giorni per azione (una chiamata per giorno).
+  auto-imposto di 366 giorni per azione (una chiamata per giorno), ma
+  prima legge la vista anno e **salta i mesi senza
+  `drillDownAvailable`** (e gli anni in 404): su un contatore con storico
+  dal 2024 chiedere il 2023 costa una chiamata, non 365.
 
 ## Cosa resta aperto
 
@@ -344,10 +380,8 @@ solo come mappa per chi volesse esplorare oltre.
    `ORA_MINIMA_RICHIESTA`.
 3. **`kConstant` ≠ 1** e **utenze business** (P.IVA nel path, profilo
    `Business_SET`): mai visti.
-4. **Vista giorno per un giorno non pubblicato**: si assume
-   `consumptions` vuoto/null; potrebbe invece essere un errore HTTP (che
-   `api.py` tratterebbe come errore → giorno in coda comunque, quindi
-   nessun dato perso, solo un log più rumoroso).
+4. **Recupero storico via Excel mensile** (una chiamata per mese): vedi
+   sopra, dipende dalla scelta sulla dipendenza `openpyxl`.
 
 ## Come contribuire
 

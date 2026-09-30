@@ -71,3 +71,23 @@ Non è un test automatico (richiede credenziali reali digitate a mano):
 utile per iterare più velocemente di quanto permetta la UI di Home
 Assistant, e come primo controllo se il login smette di funzionare in
 produzione.
+
+## `scripts/verify_set_login.py`
+
+Testa da terminale il login **SET Distribuzione** (Azure AD B2C:
+`/authorize` → `SelfAsserted` → `confirmed` → `token`, con PKCE) e poi
+anagrafica, forniture attive, vista mese e vista giorno della curva a
+15 minuti, importando direttamente `auth.py`/`api.py`/`const.py` di
+`distributors/set/` (che non dipendono da Home Assistant). Con
+`--wrong-password` prova prima un login con password sbagliata (per
+confermare la forma dell'errore di B2C), con `--refresh` esercita anche
+il `refresh_token`.
+
+Le credenziali si passano **solo** come variabili d'ambiente
+(`SET_EMAIL`/`SET_PASSWORD`, mai come argomenti); lo script **non scrive
+nulla su disco** e stampa solo forme, conteggi e totali - mai codice
+fiscale, POD, matricola o token (a differenza degli script Areti/
+E-Distribuzione non lascia file di debug da ripulire). È così che il
+30/09/2026 sono stati confermati login, rifiuto credenziali, refresh e le
+viste di consumo - vedi
+[`set-distribuzione-protocol.md`](protocols/set-distribuzione-protocol.md).

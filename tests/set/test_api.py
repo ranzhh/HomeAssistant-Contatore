@@ -243,6 +243,28 @@ class TestAnagrafica:
         assert await client.async_get_active_utilities(CF, "Prospect") == []
 
 
+# Forma reale di un giorno NON ancora pubblicato (verificato il 30/09/2026
+# chiedendo il giorno stesso): 24 segnaposto senza quarters.
+SEGNAPOSTO_GIORNO_NON_PUBBLICATO = [
+    {"year": 2026, "month": 9, "day": 30, "hour": h, "total": 0.0, "estimated": True}
+    for h in range(24)
+]
+
+
+class TestGiornoPubblicato:
+    def test_giorno_reale(self):
+        assert api.giorno_pubblicato(PAYLOAD_GIORNO["data"]["consumptions"]) is True
+
+    def test_segnaposto_non_pubblicato(self):
+        assert api.giorno_pubblicato(SEGNAPOSTO_GIORNO_NON_PUBBLICATO) is False
+
+    def test_lista_vuota(self):
+        assert api.giorno_pubblicato([]) is False
+
+    def test_quarters_vuoti(self):
+        assert api.giorno_pubblicato([{"hour": 0, "quarters": [], "total": 0.0}]) is False
+
+
 class TestConsumption:
     @pytest.mark.asyncio
     async def test_vista_giorno_manda_mese_zero_based(self):
@@ -278,6 +300,37 @@ class TestConsumption:
         """Giorno non ancora pubblicato: stato normale, non un errore."""
         client, _ = _client([(200, {"message": "Utility's consumptions retrieved", "data": {"consumptions": None}})])
         assert await client.async_get_consumption_day(CF, CONTRACT, POD, "Retail_SET", date(2026, 9, 30)) == []
+
+    @pytest.mark.asyncio
+    async def test_404_sulle_viste_ritorna_lista_vuota(self):
+        """Anno/mese senza nessun dato: il gateway risponde 404
+        {"statusCode": 404, "message": "Resource not found"} (verificato
+        sulla vista anno 2023) - non e' un errore."""
+        corpo_404 = {"statusCode": 404, "message": "Resource not found"}
+        client, _ = _client([(404, corpo_404), (404, corpo_404), (404, corpo_404)])
+        assert await client.async_get_consumption_year(CF, CONTRACT, POD, "Retail_SET", 2023) == []
+        assert await client.async_get_consumption_month(CF, CONTRACT, POD, "Retail_SET", 2023, 5) == []
+        assert await client.async_get_consumption_day(CF, CONTRACT, POD, "Retail_SET", date(2023, 5, 1)) == []
+
+    @pytest.mark.asyncio
+    async def test_404_su_registration_resta_un_errore(self):
+        client, _ = _client([(404, {"statusCode": 404})])
+        with pytest.raises(api.SetApiError):
+            await client.async_get_registration()
+
+    @pytest.mark.asyncio
+    async def test_vista_anno(self):
+        payload = {"message": "Utility's consumptions retrieved", "data": {"consumptions": [
+            {"drillDownAvailable": True, "year": 2026, "month": 1, "total": 399.59, "average": 0.0,
+             "descMonth": "January", "estimated": False, "meterSerialNumber": "matricola-di-fantasia"}],
+            "total": 2741.6472, "average": 304.62747}}
+        client, sessione = _client([(200, payload)])
+        mesi = await client.async_get_consumption_year(CF, CONTRACT, POD, "Retail_SET", 2026)
+        assert mesi[0]["month"] == 1 and mesi[0]["drillDownAvailable"] is True
+        assert sessione.richieste[0]["params"] == {
+            "consumptionRange": "F1_F2_F3", "consumptionType": "A1", "profile": "Retail_SET",
+            "supplyPoint": POD, "year": 2026,
+        }
 
     @pytest.mark.asyncio
     async def test_401_solleva_unauthorized(self):

@@ -135,6 +135,12 @@ def _aggrega_per_ora(
             )
             k_avvisata = True
 
+        if elemento.get("estimated") and not elemento.get("quarters"):
+            # Segnaposto di un'ora non ancora pubblicata (total 0.0,
+            # estimated true, niente quarters - verificato sul giorno
+            # corrente): non e' un dato, non va scritto come zero.
+            continue
+
         kwh = _kwh_dell_ora(elemento)
         if kwh is None:
             continue

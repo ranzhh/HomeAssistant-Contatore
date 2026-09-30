@@ -72,13 +72,22 @@ class SetApiClient:
         self._session = session
         self._headers = {**HEADERS_BROWSER, "Authorization": f"Bearer {access_token}"}
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get(
+        self, path: str, params: dict[str, Any] | None = None, *, none_su_404: bool = False
+    ) -> Any:
+        """GET su {BASE_API}{path}: ritorna `data`. Con none_su_404=True un
+        HTTP 404 ritorna None invece di sollevare: il gateway risponde
+        404 {"statusCode": 404, "message": "Resource not found"} per un
+        anno senza nessun dato (verificato: vista anno 2023 su un contatore
+        con storico dal 2024), non e' un errore."""
         try:
             async with self._session.get(
                 f"{BASE_API}{path}", params=params, headers=self._headers
             ) as resp:
                 if resp.status == 401:
                     raise SetApiUnauthorized(f"GET {path}: HTTP 401")
+                if resp.status == 404 and none_su_404:
+                    return None
                 if resp.status != 200:
                     testo = (await resp.text())[:300]
                     raise SetApiError(f"GET {path}: HTTP {resp.status} {testo!r}")
@@ -134,14 +143,36 @@ class SetApiClient:
         con `quarters` (4 valori kWh a 15 minuti), `total`, `average`,
         `estimated`, `kConstant`, `meterSerialNumber`.
 
-        Lista vuota se il giorno non è ancora pubblicato (comportamento
-        atteso ma non osservato direttamente: nella cattura la vista
-        mensile semplicemente non conteneva il giorno corrente)."""
+        ATTENZIONE: un giorno NON ancora pubblicato NON torna vuoto -
+        torna comunque 24 elementi segnaposto `{"year","month","day",
+        "hour","total": 0.0,"estimated": true}` SENZA `quarters` (verificato
+        il 30/09/2026 chiedendo il giorno stesso). Il chiamante deve usare
+        `giorno_pubblicato()` prima di importare, altrimenti scriverebbe
+        24 ore a zero e considererebbe il giorno fatto. Un anno/mese senza
+        nessun dato risponde invece 404 -> lista vuota."""
         dati = await self._get(
             f"/secure/utility/{fiscal_code}/{contract_id}/consumption",
             self._params_consumo(
                 pod, profile, year=giorno.year, month=giorno.month - 1, day=giorno.day
             ),
+            none_su_404=True,
+        )
+        return list((dati or {}).get("consumptions") or []) if isinstance(dati, dict) else []
+
+    async def async_get_consumption_year(
+        self, fiscal_code: str, contract_id: str, pod: str, profile: str, anno: int
+    ) -> list[dict[str, Any]]:
+        """Vista "anno": un elemento per mese (`month` 1-based, `total`,
+        `estimated`, `drillDownAvailable`). `drillDownAvailable` dice se per
+        quel mese esiste il dettaglio giorni/quarti d'ora: sul contatore
+        della cattura il 2025 ha 12 mesi tutti drillabili, il 2024 11 mesi
+        di cui solo 3 drillabili (contatore 2G da ottobre 2024), il 2023
+        risponde 404 -> lista vuota. Usata da recupera_storico per non
+        chiedere 30 giorni a vuoto per ogni mese senza dettaglio."""
+        dati = await self._get(
+            f"/secure/utility/{fiscal_code}/{contract_id}/consumption",
+            self._params_consumo(pod, profile, year=anno),
+            none_su_404=True,
         )
         return list((dati or {}).get("consumptions") or []) if isinstance(dati, dict) else []
 
@@ -155,5 +186,17 @@ class SetApiClient:
         dati = await self._get(
             f"/secure/utility/{fiscal_code}/{contract_id}/consumption",
             self._params_consumo(pod, profile, year=anno, month=mese - 1),
+            none_su_404=True,
         )
         return list((dati or {}).get("consumptions") or []) if isinstance(dati, dict) else []
+
+
+def giorno_pubblicato(consumptions: list[dict[str, Any]]) -> bool:
+    """True se la vista giorno contiene dati reali: almeno un elemento con
+    `quarters` non vuoto. I 24 segnaposto di un giorno non ancora
+    pubblicato (total 0.0, estimated true, niente quarters) danno False,
+    come una lista vuota."""
+    return any(
+        isinstance(e, dict) and isinstance(e.get("quarters"), list) and e["quarters"]
+        for e in consumptions
+    )
