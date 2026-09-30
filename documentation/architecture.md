@@ -43,8 +43,9 @@ contatore_letture/
       const.py                            # costanti di protocollo
     set/                            # pacchetto a se', Azure AD B2C (PKCE guidato a mano) + REST, nessun OTP
       auth.py                       # login B2C: authorize -> SelfAsserted -> confirmed -> token (+ refresh)
-      api.py                         # client REST (registration/active/consumption)
-      coordinator.py                  # coda per POD, UNA chiamata per giorno, ciclo orario con orario di cortesia
+      api.py                         # client REST (registration/active/consumption, Excel mensile)
+      excel.py                        # parser dell'export Excel mensile (openpyxl) -> forma della vista giorno
+      coordinator.py                  # coda per POD, UNA chiamata per giorno; storico via Excel mensile
       sensor.py                        # entita' diagnostiche per POD (ultima data disponibile, consumo giorno)
       statistics.py                     # import external statistics (curva di carico a 15 min)
       const.py                            # costanti di protocollo + schedulazione

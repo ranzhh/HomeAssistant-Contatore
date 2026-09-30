@@ -290,8 +290,9 @@ arretrato, un solo ciclo può recuperare più giorni insieme.
 la stessa coda di E-Distribuzione e un orario di cortesia configurabile
 (default 18:00: l'unica osservazione disponibile è che nel tardo
 pomeriggio il giorno prima è già completo). A differenza di Ireti l'API
-non accetta intervalli: ogni giorno è una chiamata a sé, quindi un
-arretrato di N giorni costa N chiamate (leggere) nel ciclo successivo.
+non accetta intervalli: nel ciclo automatico ogni giorno è una chiamata
+a sé (un arretrato di N giorni costa N chiamate leggere), mentre lo
+storico si recupera dall'export Excel mensile, un mese per chiamata.
 
 Per tutti, **lo storico pregresso non viene recuperato automaticamente**:
 si richiede con l'azione `recupera_storico` (vedi [Azioni](#azioni) sotto).
@@ -396,7 +397,8 @@ che attraversa e per ciascuno si importa il mese intero. Per Ireti
 (limite auto-imposto: 731 giorni) l'intervallo viene invece spezzato in
 blocchi da un mese circa, la dimensione dell'unica richiesta finora
 confermata su dati reali. Per SET Distribuzione (limite auto-imposto:
-366 giorni) ogni giorno è una chiamata a sé.
+731 giorni) si scarica l'export Excel mensile del portale, un mese per
+chiamata, saltando i mesi che il portale dichiara senza dettaglio.
 
 **`contatore_letture.recupera_ticket`** — solo Duereti/Unareti (gli altri
 distributori non hanno il concetto di ticket): riprende un ticket già

@@ -137,7 +137,7 @@ ABBANDONO_CODA_DOPO_GIORNI = 7
 # chiamate di un singolo ciclo: 30 chiamate leggere restano accettabili.
 MAX_GIORNI_IN_CODA = 30
 
-# Limite di cortesia per l'azione recupera_storico (auto-imposto): una
-# chiamata per giorno, quindi un anno = ~366 chiamate in sequenza. Più
-# basso del limite di Ireti (731) proprio per questo costo per giorno.
-MAX_GIORNI_RECUPERO_STORICO = 366
+# Limite di cortesia per l'azione recupera_storico (auto-imposto): il
+# recupero passa dall'export Excel mensile (una chiamata per mese, vedi
+# excel.py), quindi due anni sono ~24 chiamate - stesso limite di Ireti.
+MAX_GIORNI_RECUPERO_STORICO = 731

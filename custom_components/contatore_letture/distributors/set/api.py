@@ -24,6 +24,8 @@ client accettano sempre mesi 1-based e fanno la conversione da soli.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from datetime import date
 from typing import Any
@@ -189,6 +191,40 @@ class SetApiClient:
             none_su_404=True,
         )
         return list((dati or {}).get("consumptions") or []) if isinstance(dati, dict) else []
+
+
+    async def async_get_consumption_excel_month(
+        self, fiscal_code: str, contract_id: str, pod: str, profile: str, anno: int, mese: int
+    ) -> bytes | None:
+        """Export Excel del mese (1-based): l'INTERA curva a 15 minuti del
+        mese in una sola chiamata (~150 KB), verificato il 30/09/2026 -
+        somma identica alla vista mese JSON. Risposta JSON con il file in
+        base64: {"data": {"fileName": "Consumi_<POD>_<mese>_<anno>.xlsx",
+        "file": "<base64>"}}. Ritorna i byte dell'xlsx, None se il mese
+        non esiste (404) o il file manca. Il parsing e' in excel.py.
+
+        `master=true` e' quello che manda la SPA per la fornitura
+        principale (parametro legato ai "POD scambio" degli impianti di
+        produzione, sempre true per un'utenza domestica)."""
+        dati = await self._get(
+            f"/secure/utility/{fiscal_code}/{contract_id}/consumption/excel",
+            {
+                "consumptionType": CONSUMPTION_TYPE_ATTIVA,
+                "master": "true",
+                "profile": profile,
+                "supplyPoint": pod,
+                "year": anno,
+                "month": mese - 1,
+            },
+            none_su_404=True,
+        )
+        file_b64 = dati.get("file") if isinstance(dati, dict) else None
+        if not file_b64:
+            return None
+        try:
+            return base64.b64decode(file_b64, validate=True)
+        except (ValueError, binascii.Error) as err:
+            raise SetApiError(f"Excel mensile: base64 non valido ({err})") from err
 
 
 def giorno_pubblicato(consumptions: list[dict[str, Any]]) -> bool:

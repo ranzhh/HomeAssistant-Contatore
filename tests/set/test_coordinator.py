@@ -85,6 +85,10 @@ def _api(viste: dict[date, list] | None = None, errore=None):
         return (viste or {}).get(giorno, [])
 
     api.async_get_consumption_day = AsyncMock(side_effect=_giorno)
+    # Excel mensile: di default NON disponibile (errore), cosi' i test del
+    # recupero storico esercitano il ripiego giorno per giorno; i test
+    # dedicati all'Excel lo sovrascrivono.
+    api.async_get_consumption_excel_month = AsyncMock(side_effect=SetApiError("excel ko"))
     # vista anno: di default tutti i mesi drillabili
     api.async_get_consumption_year = AsyncMock(
         side_effect=lambda fc, cid, pod, prof, anno: [
@@ -296,7 +300,7 @@ class TestRecuperaStorico:
 
     async def test_intervallo_troppo_ampio_solleva_servicevalidationerror(self, coordinator):
         with pytest.raises(ServiceValidationError, match="troppo ampio"):
-            await coordinator.async_recupera_storico(date(2024, 1, 1), date(2026, 1, 1))
+            await coordinator.async_recupera_storico(date(2023, 1, 1), date(2026, 1, 1))
 
     async def test_errore_api_fa_fallire_l_azione(self, coordinator, _no_statistiche):
         coordinator._async_login = AsyncMock(return_value=_api(errore=SetApiError("500 dal portale")))
@@ -333,6 +337,61 @@ class TestRecuperaStorico:
         await coordinator.async_recupera_storico(date(2026, 7, 1), date(2026, 7, 2))
 
         assert api.async_get_consumption_day.await_count == 2
+
+    async def test_excel_mensile_evita_le_chiamate_per_giorno(
+        self, coordinator, _no_statistiche, monkeypatch
+    ):
+        """Percorso principale: un Excel per mese, nessuna vista giorno."""
+        g1, g2 = date(2026, 7, 1), date(2026, 7, 2)
+        api = _api()
+        api.async_get_consumption_excel_month = AsyncMock(return_value=b"xlsx-di-fantasia")
+        monkeypatch.setattr(
+            mod, "parse_excel_mensile",
+            lambda xlsx: {g1: _vista_giorno(g1), g2: _vista_giorno(g2)},
+        )
+        coordinator._async_login = AsyncMock(return_value=api)
+
+        await coordinator.async_recupera_storico(g1, date(2026, 7, 3))
+
+        api.async_get_consumption_excel_month.assert_awaited_once_with(
+            CF, CONTRACT_A, POD_A, PROFILE, 2026, 7
+        )
+        api.async_get_consumption_day.assert_not_awaited()
+        assert _no_statistiche.await_count == 2  # il 3 luglio non e' nel file: non importato
+
+    async def test_excel_assente_404_non_ricade_sulla_vista_giorno(
+        self, coordinator, _no_statistiche
+    ):
+        """Mese senza file (404 -> None): e' un mese vuoto, non serve
+        rifare 30 chiamate; l'azione fallisce come 'nessun dato'."""
+        api = _api()
+        api.async_get_consumption_excel_month = AsyncMock(return_value=None)
+        coordinator._async_login = AsyncMock(return_value=api)
+
+        with pytest.raises(HomeAssistantError, match="[Nn]essun"):
+            await coordinator.async_recupera_storico(DATA_DA, DATA_A)
+
+        api.async_get_consumption_day.assert_not_awaited()
+
+    async def test_excel_non_parsabile_ricade_sulla_vista_giorno(
+        self, coordinator, _no_statistiche, monkeypatch
+    ):
+        from custom_components.contatore_letture.distributors.set.excel import SetExcelError
+
+        g = date(2026, 7, 1)
+        api = _api({g: _vista_giorno(g)})
+        api.async_get_consumption_excel_month = AsyncMock(return_value=b"rotto")
+
+        def _rotto(xlsx):
+            raise SetExcelError("layout cambiato")
+
+        monkeypatch.setattr(mod, "parse_excel_mensile", _rotto)
+        coordinator._async_login = AsyncMock(return_value=api)
+
+        await coordinator.async_recupera_storico(g, date(2026, 7, 2))
+
+        assert api.async_get_consumption_day.await_count == 2
+        _no_statistiche.assert_awaited_once()
 
     async def test_successo_importa_un_giorno_per_chiamata(self, coordinator, _no_statistiche):
         viste = {g: _vista_giorno(g) for g in (date(2026, 7, 1), date(2026, 7, 2))}

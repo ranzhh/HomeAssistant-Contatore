@@ -333,6 +333,34 @@ class TestConsumption:
         }
 
     @pytest.mark.asyncio
+    async def test_excel_mensile_decodifica_il_base64(self):
+        import base64
+
+        payload = {"message": "Utility's consumptions  excel file retrieved",
+                   "data": {"fileName": "Consumi_IT221E00000000001_agosto_2026.xlsx",
+                            "file": base64.b64encode(b"PK-xlsx-di-fantasia").decode()}}
+        client, sessione = _client([(200, payload)])
+        xlsx = await client.async_get_consumption_excel_month(CF, CONTRACT, POD, "Retail_SET", 2026, 8)
+        assert xlsx == b"PK-xlsx-di-fantasia"
+        r = sessione.richieste[0]
+        assert r["url"].endswith(f"/secure/utility/{CF}/{CONTRACT}/consumption/excel")
+        assert r["params"] == {
+            "consumptionType": "A1", "master": "true", "profile": "Retail_SET",
+            "supplyPoint": POD, "year": 2026, "month": 7,
+        }
+
+    @pytest.mark.asyncio
+    async def test_excel_mensile_404_ritorna_none(self):
+        client, _ = _client([(404, {"statusCode": 404, "message": "Resource not found"})])
+        assert await client.async_get_consumption_excel_month(CF, CONTRACT, POD, "Retail_SET", 2023, 1) is None
+
+    @pytest.mark.asyncio
+    async def test_excel_mensile_base64_rotto_solleva_apierror(self):
+        client, _ = _client([(200, {"message": "x", "data": {"fileName": "f.xlsx", "file": "$$$"}})])
+        with pytest.raises(api.SetApiError, match="base64"):
+            await client.async_get_consumption_excel_month(CF, CONTRACT, POD, "Retail_SET", 2026, 8)
+
+    @pytest.mark.asyncio
     async def test_401_solleva_unauthorized(self):
         client, _ = _client([(401, {"message": "Unauthorized"})])
         with pytest.raises(api.SetApiUnauthorized):

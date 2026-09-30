@@ -309,12 +309,12 @@ K = 1; un secondo foglio `Energia Reattiva Q1` ha lo stesso layout.
 Verificato il 30/09/2026 anche su agosto 2026: 2976 righe (31 × 96) nel
 foglio attiva, e la **somma dei `Valore` coincide al millesimo con la
 somma dei `total` della vista mese JSON** (267,259 kWh). È l'unica strada
-a **una chiamata per mese** per la curva a 15 minuti: candidata per un
-`recupera_storico` più economico (≈1 chiamata/mese invece di ~30). Non
-usata dall'integrazione per ora: parsare l'xlsx richiede `openpyxl`, che
-non è tra i `requirements` del manifest (pcf_common lo importa solo in
-modo lazy in una funzione non usata dal coordinator), oppure un mini
-parser zip+XML con la sola libreria standard. Da decidere col maintainer.
+a **una chiamata per mese** per la curva a 15 minuti, ed è quella che
+usa `recupera_storico` (`excel.py`, parser con `openpyxl`, aggiunto ai
+`requirements` del manifest per questo): ≈1 chiamata per mese invece di
+~30, con ripiego automatico alla vista giorno JSON se il file di un mese
+manca o non è parsabile. Il ciclo automatico resta sulla vista giorno
+(un giorno alla volta è esattamente quello che serve lì).
 
 ### Altri endpoint provati dal vivo (30/09/2026)
 
@@ -365,11 +365,14 @@ solo come mappa per chi volesse esplorare oltre.
 - **Identificativi**: `fiscal_code`/`profile`/`contract_ids` dalla entry;
   se un `contractId` manca (POD aggiunto dalle opzioni, entry vecchia)
   si ririsolve da `active` e si persiste.
-- **`recupera_storico`**: un giorno alla volta, limite di cortesia
-  auto-imposto di 366 giorni per azione (una chiamata per giorno), ma
-  prima legge la vista anno e **salta i mesi senza
-  `drillDownAvailable`** (e gli anni in 404): su un contatore con storico
-  dal 2024 chiedere il 2023 costa una chiamata, non 365.
+- **`recupera_storico`**: prima legge la vista anno e **salta i mesi
+  senza `drillDownAvailable`** (e gli anni in 404), poi per ogni mese
+  rimasto scarica **l'export Excel mensile** (una chiamata, tutta la
+  curva del mese) e lo converte nella forma della vista giorno
+  (`excel.py`), così l'import passa dallo stesso percorso del ciclo
+  automatico. Se l'Excel di un mese non è disponibile o non è parsabile
+  ricade sulla vista giorno, una chiamata per giorno. Limite di cortesia
+  auto-imposto: 731 giorni per azione (≈24 chiamate).
 
 ## Cosa resta aperto
 
@@ -380,8 +383,9 @@ solo come mappa per chi volesse esplorare oltre.
    `ORA_MINIMA_RICHIESTA`.
 3. **`kConstant` ≠ 1** e **utenze business** (P.IVA nel path, profilo
    `Business_SET`): mai visti.
-4. **Recupero storico via Excel mensile** (una chiamata per mese): vedi
-   sopra, dipende dalla scelta sulla dipendenza `openpyxl`.
+4. **Excel mensile nel giorno di cambio ora**: come per la vista giorno,
+   non verificato (8 righe con la stessa `Da ora` nell'ora ripetuta?
+   `excel.py` le sommerebbe nella stessa ora).
 
 ## Come contribuire
 

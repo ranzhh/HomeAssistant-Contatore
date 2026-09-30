@@ -77,6 +77,7 @@ from .const import (
     ORA_MINIMA_RICHIESTA,
     RITARDO_DATI_GIORNI,
 )
+from .excel import SetExcelError, parse_excel_mensile
 from .statistics import (
     async_get_ultima_data_disponibile,
     async_import_curva_giorno,
@@ -433,6 +434,45 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
             }
         return da_saltare
 
+    async def _async_viste_da_excel(
+        self, api: SetApiClient, pod: str, anno: int, mese: int
+    ) -> dict[date, list[dict[str, Any]]] | None:
+        """Curva del mese dall'export Excel (una chiamata), gia' nella forma
+        della vista giorno per ogni giorno presente. None se l'Excel non
+        e' disponibile o non e' parsabile: il chiamante ricade sulla vista
+        giorno. Un mese vuoto (404) e' un dict vuoto, non None: non ha
+        senso rifare 30 chiamate a vuoto."""
+        fiscal_code, profile = await self._async_identita(api)
+        contract_id = await self._async_contract_id(api, pod)
+        try:
+            try:
+                xlsx = await api.async_get_consumption_excel_month(
+                    fiscal_code, contract_id, pod, profile, anno, mese
+                )
+            except SetApiUnauthorized:
+                api = await self._async_login(forza=True)
+                xlsx = await api.async_get_consumption_excel_month(
+                    fiscal_code, contract_id, pod, profile, anno, mese
+                )
+        except SetApiError as err:
+            _LOGGER.warning(
+                "POD %s: Excel mensile %d-%02d non disponibile (%s), ricado sulla vista giorno",
+                pod, anno, mese, err,
+            )
+            return None
+        if xlsx is None:
+            return {}
+        try:
+            viste = await self.hass.async_add_executor_job(parse_excel_mensile, xlsx)
+        except SetExcelError as err:
+            _LOGGER.warning(
+                "POD %s: Excel mensile %d-%02d non parsabile (%s), ricado sulla vista giorno",
+                pod, anno, mese, err,
+            )
+            return None
+        _LOGGER.debug("POD %s: Excel %d-%02d con %d giorni", pod, anno, mese, len(viste))
+        return viste
+
     # ------------------------------------------------------------------
     # Recupero storico manuale (azione contatore_letture.recupera_storico)
     # ------------------------------------------------------------------
@@ -440,8 +480,11 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
     async def async_recupera_storico(
         self, data_da: date, data_a: date, pod: str | None = None
     ) -> None:
-        """Recupera e importa la curva per [data_da, data_a], un giorno
-        alla volta (l'unica granularità con i quarti d'ora).
+        """Recupera e importa la curva per [data_da, data_a]: un export
+        Excel per ogni mese toccato (tutta la curva a 15 minuti del mese in
+        una chiamata, vedi excel.py), con ripiego alla vista giorno JSON,
+        una chiamata per giorno, se l'Excel di un mese non e' utilizzabile.
+        I mesi che la vista anno dichiara senza dettaglio vengono saltati.
 
         Se 'pod' è omesso, lo fa per TUTTI i POD configurati sulla entry;
         se specificato, solo per quello. I giorni recuperati con successo
@@ -469,8 +512,8 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
         if len(giorni) > MAX_GIORNI_RECUPERO_STORICO:
             raise ServiceValidationError(
                 f"Intervallo di {len(giorni)} giorni troppo ampio per una singola "
-                f"richiesta (limite di cortesia: {MAX_GIORNI_RECUPERO_STORICO} giorni - "
-                "una chiamata per giorno). Ripeti l'azione su periodi più corti."
+                f"richiesta (limite di cortesia: {MAX_GIORNI_RECUPERO_STORICO} giorni). "
+                "Ripeti l'azione su periodi più corti."
             )
 
         api = await self._async_login()
@@ -492,23 +535,34 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
                     "false o anno assente): %s",
                     pod_corrente, ", ".join(f"{a}-{m:02d}" for a, m in sorted(mesi_da_saltare)),
                 )
-            for giorno in giorni:
-                if (giorno.year, giorno.month) in mesi_da_saltare:
-                    continue
-                try:
-                    api, vista = await self._async_vista_giorno(api, pod_corrente, giorno)
-                except (SetApiError, SetAuthError) as err:
-                    _LOGGER.warning(
-                        "POD %s: errore recuperando il giorno %s: %s", pod_corrente, giorno, err
-                    )
-                    fallimenti.append(f"{pod_corrente}/{giorno}: {err}")
-                    continue
-                if not giorno_pubblicato(vista):
-                    continue
-                await async_import_curva_giorno(self.hass, pod_corrente, giorno, vista)
-                self._rimuovi_dalla_coda(pod_corrente, [giorno])
-                trovati += 1
-                giorni_importati += 1
+            mesi = sorted({(g.year, g.month) for g in giorni} - mesi_da_saltare)
+            for anno, mese in mesi:
+                giorni_del_mese = [g for g in giorni if (g.year, g.month) == (anno, mese)]
+                # 1. Excel mensile: tutta la curva del mese in una chiamata.
+                viste = await self._async_viste_da_excel(api, pod_corrente, anno, mese)
+                # 2. Ripiego giorno per giorno solo se l'Excel non e' utilizzabile.
+                if viste is None:
+                    viste = {}
+                    for giorno in giorni_del_mese:
+                        try:
+                            api, vista = await self._async_vista_giorno(api, pod_corrente, giorno)
+                        except (SetApiError, SetAuthError) as err:
+                            _LOGGER.warning(
+                                "POD %s: errore recuperando il giorno %s: %s",
+                                pod_corrente, giorno, err,
+                            )
+                            fallimenti.append(f"{pod_corrente}/{giorno}: {err}")
+                            continue
+                        if giorno_pubblicato(vista):
+                            viste[giorno] = vista
+                for giorno in giorni_del_mese:
+                    vista = viste.get(giorno)
+                    if not vista or not giorno_pubblicato(vista):
+                        continue
+                    await async_import_curva_giorno(self.hass, pod_corrente, giorno, vista)
+                    self._rimuovi_dalla_coda(pod_corrente, [giorno])
+                    trovati += 1
+                    giorni_importati += 1
 
             _LOGGER.info(
                 "POD %s: recupero storico completato, %d giorni trovati nel periodo %s - %s",
