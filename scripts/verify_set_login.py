@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test da terminale per SET Distribuzione: login B2C, scoperta
+"""Verifica da terminale per SET Distribuzione: login B2C, scoperta
 della fornitura, una vista giorno della curva - senza Home Assistant.
 
 Stesso ruolo di verify_ireti/areti/edistribuzione_login.py: molto più
@@ -44,7 +44,7 @@ SET_DIR = (
 
 def _carica_pacchetto():
     """Carica const/auth/api saltando gli __init__.py (che importano HA)."""
-    pkg_name = "set_smoke"
+    pkg_name = "set_verify"
     pkg = types.ModuleType(pkg_name)
     pkg.__path__ = [str(SET_DIR)]
     sys.modules[pkg_name] = pkg

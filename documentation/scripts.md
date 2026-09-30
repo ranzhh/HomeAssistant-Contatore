@@ -89,5 +89,5 @@ nulla su disco** e stampa solo forme, conteggi e totali - mai codice
 fiscale, POD, matricola o token (a differenza degli script Areti/
 E-Distribuzione non lascia file di debug da ripulire). È così che il
 30/09/2026 sono stati confermati login, rifiuto credenziali, refresh e le
-viste di consumo - vedi
+viste di consumo sull'account della cattura - vedi
 [`set-distribuzione-protocol.md`](protocols/set-distribuzione-protocol.md).

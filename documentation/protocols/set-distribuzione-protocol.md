@@ -15,10 +15,10 @@ header `Authorization`).
 
 **Non ancora testato dentro Home Assistant** su un'installazione reale:
 config flow, import automatico e sensori sono coperti dai test unitari;
-login (anche con password sbagliata), refresh, anagrafica, forniture e
-viste mese/giorno sono confermati dallo smoke test da terminale del
-30/09/2026 (`scripts/verify_set_login.py`) sull'account di chi ha fornito
-la cattura, non ancora da un uso prolungato. Vedi
+login (anche con password sbagliata), refresh, anagrafica, forniture,
+viste anno/mese/giorno ed export Excel sono confermati da terminale
+(`scripts/verify_set_login.py`, 30/09/2026) sullo stesso account della
+cattura, non ancora da un uso prolungato. Vedi
 [Cosa resta aperto](#cosa-resta-aperto).
 
 __Le informazioni qui sotto vengono dall'analisi del traffico del portale
@@ -135,8 +135,8 @@ cookie `x-ms-cpim-*` impostati dalla 1 (serve un cookie jar).
 
 `access_token` dura **1h**, `refresh_token` **24h**. Il refresh
 (`grant_type=refresh_token` sullo stesso endpoint, con `client_id`,
-`refresh_token`, `scope`, `client_info=1`) — **verificato** con lo smoke
-test del 30/09/2026 (`scripts/verify_set_login.py --refresh`): nuovo
+`refresh_token`, `scope`, `client_info=1`) — **verificato** da terminale
+il 30/09/2026 (`scripts/verify_set_login.py --refresh`): nuovo
 `access_token` con `expires_in 3600`. Il coordinator lo usa e ricade sul
 login completo se fallisce.
 
@@ -150,7 +150,7 @@ login completo se fallisce.
 > Verificato dal vivo il 30/09/2026 senza credenziali (basta `/authorize`
 > due volte). Con `quote_cookie=False` tutto passa. `auth.crea_cookie_jar()`
 > restituisce il jar giusto e `SetAuthClient` rifiuta subito una sessione
-> con un jar che quota. Il primo smoke test è caduto esattamente qui.
+> con un jar che quota.
 
 > [!NOTE]
 > **Header `Authorization: Bearer <access_token>`** su tutte le chiamate
@@ -246,8 +246,8 @@ Elemento della vista giorno (valori reali, identificativi omessi):
 - **Unità: kWh per quarto d'ora** — verificato in tre modi: l'export
   Excel dello stesso portale dichiara `Unità di misura: kWh`; `total` di
   ogni ora è esattamente la somma dei 4 `quarters` (controllato su tutte
-  le 24 ore); chi ha fornito la cattura ha confrontato i totali mensili
-  con il contatore fisico e coincidono. **Sono letture del distributore,
+  le 24 ore); i totali mensili del portale coincidono con quelli letti
+  sul contatore fisico della fornitura della cattura. **Sono letture del distributore,
   non dati di fatturazione** (il dubbio della scheda precedente è
   chiuso).
 - `quarters[0]` = hh:00-hh:15, `[3]` = hh:45-hh:00, ora **locale**
@@ -398,13 +398,12 @@ disco.
 
 Per una **cattura HAR** (Chrome/Firefox, Preserve log, "Export HAR with
 content"): la HAR grezza contiene token di sessione, cookie B2C, codice
-fiscale, POD, matricola del contatore, nome e indirizzo — **non
-allegarla a una issue pubblica**. Prima di condividerla anche in
-privato, passala da uno scrubber che tolga gli header `Authorization`/
-`Cookie`/`Set-Cookie`, i campi `access_token`/`refresh_token`/`id_token`/
-`code`/`code_verifier`/`client_info`/`state`/`nonce`/`csrf`/`tx`, i body
-dei POST verso `b2clogin.com`, i JWT, il CF, il POD, email, telefono,
+fiscale, POD, matricola del contatore (17 caratteri), nome e indirizzo —
+**non allegarla a una issue pubblica**. Prima di condividerla anche in
+privato, anonimizzala con uno script che tolga gli header
+`Authorization`/`Cookie`/`Set-Cookie`, i campi `access_token`/
+`refresh_token`/`id_token`/`code`/`code_verifier`/`client_info`/`state`/
+`nonce`/`csrf`/`tx`, i body dei POST verso `b2clogin.com`, i JWT, il CF,
+il POD (anche dentro `fileName` dell'export Excel), email, telefono,
 matricola e i base64 (l'export Excel viaggia in base64 dentro un JSON) —
-e controlla il risultato con dei conteggi, non a occhio: il primo
-tentativo su questa cattura lasciava passare il POD dentro il nome del
-file Excel e la matricola (15 caratteri, non 17).
+e verifica il risultato con dei conteggi automatici, non a occhio.

@@ -28,15 +28,15 @@ come async_create_clientsession di Home Assistant):
          -> access_token (1h), refresh_token (24h), id_token.
 
 Il refresh (grant_type=refresh_token sullo stesso endpoint) non compare
-nella cattura (durata < 1h) ma è verificato dallo smoke test del
-30/09/2026 (scripts/verify_set_login.py --refresh) - il coordinator lo usa
+nella cattura (durata < 1h) ma è verificato da terminale il 30/09/2026
+(scripts/verify_set_login.py --refresh) - il coordinator lo usa
 e ricade sul login completo se fallisce.
 
 I nomi dei campi del form al passo 2 (`signInName`, `password`) vengono
 dalla pagina custom della UI di login (signuporsignin-set-ui.html) e dallo
 script B2C che la invia (`request_type=RESPONSE&` + id/valore dei campi);
-il body reale del POST non è nella cattura (scrubbed) ma il login con
-questi campi funziona (smoke test del 30/09/2026).
+il body reale del POST non è nella cattura (redatto) ma il login con
+questi campi funziona (verificato da terminale il 30/09/2026).
 """
 from __future__ import annotations
 
@@ -273,8 +273,8 @@ class SetAuthClient:
         )
 
     async def async_refresh(self, refresh_token: str) -> SetTokens:
-        """grant_type=refresh_token - verificato con lo smoke test del
-        30/09/2026. Solleva SetAuthError se B2C lo rifiuta: il chiamante
+        """grant_type=refresh_token - verificato da terminale il 30/09/2026
+        (scripts/verify_set_login.py --refresh). Solleva SetAuthError se B2C lo rifiuta: il chiamante
         ricade sul login completo."""
         try:
             return await self._token_request(

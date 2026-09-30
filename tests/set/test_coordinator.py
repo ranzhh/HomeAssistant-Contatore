@@ -216,8 +216,8 @@ class TestUpdateData:
         self, coordinator, _no_statistiche
     ):
         """Il caso reale del giorno corrente: 24 elementi estimated senza
-        quarters. Prima di questa correzione sarebbero finiti nelle
-        statistiche come 24 ore a zero e il giorno sarebbe uscito dalla coda."""
+        quarters. Importarli scriverebbe 24 ore a zero nelle statistiche e
+        il giorno uscirebbe dalla coda senza essere mai riprovato."""
         atteso = date(2026, 9, 17)
         coordinator._async_login = AsyncMock(return_value=_api({atteso: _segnaposto(atteso)}))
 
