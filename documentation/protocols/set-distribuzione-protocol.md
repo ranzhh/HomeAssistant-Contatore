@@ -311,7 +311,8 @@ foglio attiva, e la **somma dei `Valore` coincide al millesimo con la
 somma dei `total` della vista mese JSON** (267,259 kWh). È l'unica strada
 a **una chiamata per mese** per la curva a 15 minuti, ed è quella che
 usa `recupera_storico` (`excel.py`, parser con `openpyxl`, aggiunto ai
-`requirements` del manifest per questo): ≈1 chiamata per mese invece di
+`requirements` del manifest per questo; parser verificato sul file reale di
+agosto 2026: 31 giorni, 744 ore, 267,259 kWh): ≈1 chiamata per mese invece di
 ~30, con ripiego automatico alla vista giorno JSON se il file di un mese
 manca o non è parsabile. Il ciclo automatico resta sulla vista giorno
 (un giorno alla volta è esattamente quello che serve lì).
