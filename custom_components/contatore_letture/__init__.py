@@ -7,7 +7,8 @@ E-Distribuzione ha un coordinator proprio (protocollo diverso, OAuth2+OTP
 invece di Client ID/Secret ID), Areti un altro ancora (sessione a cookie,
 nessun OTP, cursore mensile invece di coda giornaliera) e Ireti un altro
 ancora (REST + Bearer token Keycloak, nessun OTP, finestra scorrevole
-invece di coda/cursore) - tutti implementano la stessa azione
+invece di coda/cursore), SET Distribuzione un altro ancora (Azure AD B2C
++ REST, una chiamata per giorno) - tutti implementano la stessa azione
 'recupera_storico' con firma compatibile (pod opzionale, non solo per
 l'intera configurazione come i PCF).
 """
@@ -30,6 +31,7 @@ from .distributors.areti.coordinator import AretiCoordinator
 from .distributors.edistribuzione.coordinator import EdistribuzioneCoordinator
 from .distributors.ireti.coordinator import IretiCoordinator
 from .distributors.pcf_common.coordinator import PcfCoordinator
+from .distributors.set.coordinator import SetCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,7 +91,7 @@ def _risolvi_coordinator_e_pod_da_device(hass: HomeAssistant, device_id: str):
     POD E-Distribuzione, al POD specifico.
 
     Gli identifiers dei device sono sempre (DOMAIN, f"{entry_id}_{pod}")
-    per i dispositivi per-POD (pcf_common, edistribuzione, areti e ireti,
+    per i dispositivi per-POD (pcf_common, edistribuzione, areti, ireti e set,
     stesso formato in tutti - vedi rispettivi sensor.py), o (DOMAIN, entry_id)
     per il dispositivo "account" di pcf_common (senza POD specifico: il
     recupero PCF vale sempre per l'intera configurazione insieme).
@@ -127,7 +129,7 @@ def _risolvi_coordinator_e_pod_da_device(hass: HomeAssistant, device_id: str):
     coordinator = hass.data[DOMAIN][entry_id]
 
     pod = None
-    if isinstance(coordinator, (EdistribuzioneCoordinator, AretiCoordinator, IretiCoordinator)):
+    if isinstance(coordinator, (EdistribuzioneCoordinator, AretiCoordinator, IretiCoordinator, SetCoordinator)):
         prefisso = f"{entry_id}_"
         for dominio, identificativo in device.identifiers:
             if dominio == DOMAIN and identificativo.startswith(prefisso):
@@ -158,12 +160,15 @@ async def _async_registra_servizi(hass: HomeAssistant) -> None:
         coordinator, pod = _risolvi_coordinator_e_pod_da_device(hass, call.data["device_id"])
         if not isinstance(
             coordinator,
-            (PcfCoordinator, EdistribuzioneCoordinator, AretiCoordinator, IretiCoordinator),
+            (
+                PcfCoordinator, EdistribuzioneCoordinator, AretiCoordinator,
+                IretiCoordinator, SetCoordinator,
+            ),
         ):
             raise HomeAssistantError(
                 "Il dispositivo selezionato non supporta il recupero storico."
             )
-        if isinstance(coordinator, (EdistribuzioneCoordinator, AretiCoordinator, IretiCoordinator)):
+        if isinstance(coordinator, (EdistribuzioneCoordinator, AretiCoordinator, IretiCoordinator, SetCoordinator)):
             await coordinator.async_recupera_storico(
                 call.data["data_da"], call.data["data_a"], pod=pod
             )
@@ -267,6 +272,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return True
 
+    if info["kind"] == "set":
+        coordinator = modulo.create_coordinator(hass, entry)
+        hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+        await _async_registra_servizi(hass)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        # Come i rami areti/ireti sopra: le credenziali sono gia' state
+        # validate in config_flow, un primo aggiornamento fallito non deve
+        # impedire il setup. Prima dell'orario di cortesia il primo ciclo
+        # non chiede nemmeno nulla (vedi set/coordinator.py).
+        await coordinator.async_refresh()
+        if not coordinator.last_update_success:
+            _LOGGER.warning(
+                "Primo aggiornamento dati non riuscito per %s (l'autenticazione però funziona): "
+                "l'integrazione resta attiva e riproverà automaticamente. Ultimo errore: %s",
+                info["display_name"],
+                coordinator.last_exception,
+            )
+        return True
+
     # Nessun altro "kind" atteso: se arriviamo qui e' un bug del registry.
     raise HomeAssistantError(f"Distributore con kind sconosciuto: {info['kind']}")
 
@@ -284,10 +308,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     edistribuzione_rimasti = any(isinstance(c, EdistribuzioneCoordinator) for c in rimanenti)
     areti_rimasti = any(isinstance(c, AretiCoordinator) for c in rimanenti)
     ireti_rimasti = any(isinstance(c, IretiCoordinator) for c in rimanenti)
+    set_rimasti = any(isinstance(c, SetCoordinator) for c in rimanenti)
 
     if not pcf_rimasti:
         hass.services.async_remove(DOMAIN, SERVICE_RECUPERA_TICKET)
-    if not pcf_rimasti and not edistribuzione_rimasti and not areti_rimasti and not ireti_rimasti:
+    if not (pcf_rimasti or edistribuzione_rimasti or areti_rimasti or ireti_rimasti or set_rimasti):
         hass.services.async_remove(DOMAIN, SERVICE_RECUPERA_STORICO)
 
     return True

@@ -58,6 +58,27 @@ from custom_components.contatore_letture.distributors.pcf_common.const import (
     CONF_PENDING_DATA_DA,
     CONF_PENDING_TICKET,
 )
+from custom_components.contatore_letture.distributors.set import api as set_api
+from custom_components.contatore_letture.distributors.set import auth as set_auth
+from custom_components.contatore_letture.distributors.set.auth import (
+    SetInvalidCredentials,
+    SetTokens,
+)
+from custom_components.contatore_letture.distributors.set.const import (
+    CONF_CONTRACT_IDS as SET_CONF_CONTRACT_IDS,
+)
+from custom_components.contatore_letture.distributors.set.const import (
+    CONF_EMAIL as SET_CONF_EMAIL,
+)
+from custom_components.contatore_letture.distributors.set.const import (
+    CONF_FISCAL_CODE as SET_CONF_FISCAL_CODE,
+)
+from custom_components.contatore_letture.distributors.set.const import (
+    CONF_PASSWORD as SET_CONF_PASSWORD,
+)
+from custom_components.contatore_letture.distributors.set.const import (
+    CONF_PROFILE as SET_CONF_PROFILE,
+)
 
 FAKE_TREE = {
     "Lombardia": {
@@ -723,3 +744,233 @@ async def test_ireti_opzioni_non_supportate(hass):
     res = await hass.config_entries.options.async_init(entry.entry_id)
     assert res["type"] == FlowResultType.ABORT
     assert res["reason"] == "options_not_supported"
+
+
+# --- ramo SET Distribuzione (login B2C -> POD dall'account, come ireti) ---
+
+SET_UTILITY = {
+    "businessPartner": "0000000001",
+    "name": "Casa",
+    "utilityStatus": "ACTIVE",
+    "podPdr": "IT221E00000000001",
+    "utilityType": "ENERGY",
+    "utilityAddress": "VIA DI FANTASIA 1, PAESE",
+    "contractId": "0010000001",
+    "pesseGroup": "7",
+}
+SET_TOKENS = SetTokens("access-fantasia", "refresh-fantasia", 3600, 86400)
+
+
+@pytest.fixture
+def set_mocks(monkeypatch):
+    """Sostituisce SetAuthClient / SetApiClient e le sessioni aiohttp.
+    Default: login ok, un solo POD sull'account."""
+    auth = Mock()
+    auth.async_login = AsyncMock(return_value=SET_TOKENS)
+
+    api = Mock()
+    api.async_get_registration = AsyncMock(
+        return_value={"fiscalCode": "AAABBB00A00A000A", "profiles": ["Retail_SET"]}
+    )
+    api.async_get_active_utilities = AsyncMock(return_value=[SET_UTILITY])
+
+    monkeypatch.setattr(set_auth, "SetAuthClient", Mock(return_value=auth))
+    monkeypatch.setattr(set_api, "SetApiClient", Mock(return_value=api))
+    monkeypatch.setattr(cf, "async_create_clientsession", lambda *a, **k: Mock())
+    return SimpleNamespace(auth=auth, api=api)
+
+
+async def _fino_a_set_user(hass):
+    """user -> ... -> distributor_info -> submit, con ARERA che dà un
+    operatore non supportato e scelta manuale di SET."""
+    res = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"regione": "Lombardia"})
+    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"provincia": "Milano"})
+    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"comune": "Vimodrone"})
+    res = await hass.config_entries.flow.async_configure(res["flow_id"], {"distributor": "set"})
+    return await hass.config_entries.flow.async_configure(res["flow_id"], {})
+
+
+async def test_set_credenziali_non_valide(hass, _arera_sconosciuto, set_mocks):
+    set_mocks.auth.async_login.side_effect = SetInvalidCredentials("credenziali errate")
+    res = await _fino_a_set_user(hass)
+    assert res["step_id"] == "set_user"
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "sbagliata"}
+    )
+    assert res["type"] == FlowResultType.FORM
+    assert res["step_id"] == "set_user"
+    assert res["errors"] == {"base": "invalid_auth"}
+
+
+async def test_set_un_solo_pod_crea_entry_subito(hass, _arera_sconosciuto, set_mocks):
+    res = await _fino_a_set_user(hass)
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "x"}
+    )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert res["data"]["distributor"] == "set"
+    assert res["data"][SET_CONF_EMAIL] == "u@example.com"
+    assert res["data"][SET_CONF_PASSWORD] == "x"
+    assert res["data"][CONF_PODS] == ["IT221E00000000001"]
+    assert res["data"][SET_CONF_FISCAL_CODE] == "AAABBB00A00A000A"
+    assert res["data"][SET_CONF_PROFILE] == "Retail_SET"
+    assert res["data"][SET_CONF_CONTRACT_IDS] == {"IT221E00000000001": "0010000001"}
+    set_mocks.api.async_get_active_utilities.assert_awaited_once_with(
+        "AAABBB00A00A000A", "Retail_SET"
+    )
+
+
+async def test_set_nessuna_fornitura_abortisce(hass, _arera_sconosciuto, set_mocks):
+    """Account mySET "Prospect": lo stato di partenza di questa ricerca -
+    va segnalato chiaramente, non trattato come un errore generico."""
+    set_mocks.api.async_get_active_utilities.return_value = []
+    res = await _fino_a_set_user(hass)
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "x"}
+    )
+    assert res["type"] == FlowResultType.ABORT
+    assert res["reason"] == "no_set_pods_associated"
+
+
+async def test_set_recupero_forniture_fallito_abortisce(hass, _arera_sconosciuto, set_mocks):
+    set_mocks.api.async_get_active_utilities.side_effect = RuntimeError("boom")
+    res = await _fino_a_set_user(hass)
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "x"}
+    )
+    assert res["type"] == FlowResultType.ABORT
+    assert res["reason"] == "set_utilities_failed"
+
+
+async def test_set_piu_pod_si_scelgono(hass, _arera_sconosciuto, set_mocks):
+    set_mocks.api.async_get_active_utilities.return_value = [
+        SET_UTILITY,
+        {**SET_UTILITY, "podPdr": "IT221E00000000002", "contractId": "0010000002",
+         "utilityAddress": None},
+    ]
+    res = await _fino_a_set_user(hass)
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "x"}
+    )
+    assert res["step_id"] == "set_pod"
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {CONF_PODS: ["IT221E00000000002"]}
+    )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert res["data"][CONF_PODS] == ["IT221E00000000002"]
+    assert res["data"][SET_CONF_CONTRACT_IDS] == {"IT221E00000000002": "0010000002"}
+
+
+def _entry_set(hass, pods=("IT221E00000000001",)):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            "distributor": "set",
+            SET_CONF_EMAIL: "u@example.com",
+            SET_CONF_PASSWORD: "vecchia",
+            CONF_PODS: list(pods),
+            SET_CONF_FISCAL_CODE: "AAABBB00A00A000A",
+            SET_CONF_PROFILE: "Retail_SET",
+            SET_CONF_CONTRACT_IDS: {"IT221E00000000001": "0010000001"},
+        },
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def test_set_reauth_aggiorna_credenziali(hass, set_mocks):
+    entry = _entry_set(hass)
+    res = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reauth", "entry_id": entry.entry_id},
+        data=entry.data,
+    )
+    assert res["step_id"] == "set_reauth_user"
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "nuova"}
+    )
+    assert res["type"] == FlowResultType.ABORT
+    assert res["reason"] == "reauth_successful"
+    assert entry.data[SET_CONF_PASSWORD] == "nuova"
+
+
+async def test_set_reauth_credenziali_non_valide(hass, set_mocks):
+    entry = _entry_set(hass)
+    set_mocks.auth.async_login.side_effect = SetInvalidCredentials("no")
+    res = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reauth", "entry_id": entry.entry_id},
+        data=entry.data,
+    )
+    res = await hass.config_entries.flow.async_configure(
+        res["flow_id"], {"email": "u@example.com", "password": "sbagliata"}
+    )
+    assert res["type"] == FlowResultType.FORM
+    assert res["errors"] == {"base": "invalid_auth"}
+
+
+async def test_set_opzioni_menu(hass, set_mocks):
+    entry = _entry_set(hass)
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    assert res["type"] == FlowResultType.MENU
+    assert set(res["menu_options"]) == {"set_aggiungi_pod", "set_rimuovi_pod", "orario"}
+
+
+async def test_set_opzioni_aggiungi_pod(hass, set_mocks):
+    entry = _entry_set(hass)
+    set_mocks.api.async_get_active_utilities.return_value = [
+        SET_UTILITY,
+        {**SET_UTILITY, "podPdr": "IT221E00000000002", "contractId": "0010000002"},
+    ]
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "set_aggiungi_pod"}
+    )
+    assert res["type"] == FlowResultType.FORM
+    assert res["step_id"] == "set_aggiungi_pod"
+    with patch.object(hass.config_entries, "async_reload", AsyncMock(return_value=True)):
+        res = await hass.config_entries.options.async_configure(
+            res["flow_id"], {"pods_da_aggiungere": ["IT221E00000000002"]}
+        )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_PODS] == ["IT221E00000000001", "IT221E00000000002"]
+    assert entry.data[SET_CONF_CONTRACT_IDS]["IT221E00000000002"] == "0010000002"
+
+
+async def test_set_opzioni_aggiungi_pod_nessuno_disponibile(hass, set_mocks):
+    entry = _entry_set(hass)
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "set_aggiungi_pod"}
+    )
+    assert res["type"] == FlowResultType.ABORT
+    assert res["reason"] == "nessun_pod_da_aggiungere"
+
+
+async def test_set_opzioni_rimuovi_pod(hass, set_mocks):
+    entry = _entry_set(hass, pods=("IT221E00000000001", "IT221E00000000002"))
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "set_rimuovi_pod"}
+    )
+    assert res["step_id"] == "set_rimuovi_pod"
+    with patch.object(hass.config_entries, "async_reload", AsyncMock(return_value=True)):
+        res = await hass.config_entries.options.async_configure(
+            res["flow_id"], {"pods_da_rimuovere": ["IT221E00000000002"]}
+        )
+    assert res["type"] == FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_PODS] == ["IT221E00000000001"]
+
+
+async def test_set_opzioni_non_puoi_rimuoverli_tutti(hass, set_mocks):
+    entry = _entry_set(hass)
+    res = await hass.config_entries.options.async_init(entry.entry_id)
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"next_step_id": "set_rimuovi_pod"}
+    )
+    res = await hass.config_entries.options.async_configure(
+        res["flow_id"], {"pods_da_rimuovere": ["IT221E00000000001"]}
+    )
+    assert res["type"] == FlowResultType.FORM
+    assert res["errors"] == {"pods_da_rimuovere": "non_puoi_rimuoverli_tutti"}

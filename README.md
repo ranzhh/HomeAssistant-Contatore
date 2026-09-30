@@ -5,7 +5,7 @@ Unofficial meta-integration for Italian electricity distributor meter data in Ho
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://hacs.xyz/)
 [![GitHub Release](https://img.shields.io/github/v/release/riccardorossi92/HomeAssistant-Contatore.svg?style=for-the-badge&color=blue)](https://github.com/riccardorossi92/HomeAssistant-Contatore/releases)
 
-> **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by ARERA, Duereti, Unareti, E-Distribuzione, Areti, Ireti, or any other distributor in any way.
+> **Disclaimer:** This is an unofficial integration and is not affiliated with or endorsed by ARERA, Duereti, Unareti, E-Distribuzione, Areti, Ireti, SET Distribuzione, or any other distributor in any way.
 
 Integrazione per Home Assistant che, dato il tuo comune, individua
 automaticamente il distributore elettrico competente (interrogando
@@ -25,6 +25,7 @@ Invece di dover sapere in anticipo quale distributore ti serve,
 | E-Distribuzione | Email + password + OTP | `recupera_storico` |
 | Areti | Email + password | `recupera_storico` |
 | Ireti | Username + password | `recupera_storico` |
+| SET Distribuzione | Email + password | `recupera_storico` |
 
 Per Duereti/Unareti/E-Distribuzione/Areti: login, lettura dati, import
 nella Energy Dashboard e più POD per configurazione — tutto confermato
@@ -41,6 +42,14 @@ funzionante su installazioni reali. Dettagli sulle azioni in
 > [documentation/protocols/ireti-protocol.md](documentation/protocols/ireti-protocol.md).
 > Se lo provi e trovi un problema, apri una issue.
 
+> [!NOTE]
+> **SET Distribuzione** (Trentino, gruppo Dolomiti Energia) è nuovo:
+> login Azure AD B2C e curva di carico a **15 minuti** confermati con
+> dati reali (30/09/2026), **non ancora testato in produzione dentro Home
+> Assistant**. Restano da verificare il comportamento nei giorni di
+> cambio ora e l'orario esatto di pubblicazione dei dati — vedi
+> [documentation/protocols/set-distribuzione-protocol.md](documentation/protocols/set-distribuzione-protocol.md).
+
 Per i comuni serviti da un distributore non ancora supportato, il wizard di
 configurazione permette comunque di selezionarlo manualmente se sai che è
 uno di quelli supportati, o si ferma con un messaggio chiaro altrimenti.
@@ -50,22 +59,9 @@ uno di quelli supportati, o si ferma con un messaggio chiaro altrimenti.
 > [!TIP]
 > Per questi distributori manca un solo ingrediente: un account con un
 > **POD già associato**. Chi mantiene il progetto non ne ha uno per
-> nessuno dei tre, quindi da solo non può andare oltre — **se hai una
+> nessuno di questi, quindi da solo non può andare oltre — **se hai una
 > fornitura attiva con uno di questi distributori, sei tu il pezzo
 > mancante.**
-
-<details>
-<summary><b>SET Distribuzione</b> (Rovereto, gruppo Dolomiti Energia) — da confermare se i consumi sono letture vere</summary>
-
-Login (Azure AD B2C) e anagrafica verificati, ma la cattura disponibile è
-di un account senza fornitura associata (profilo "Prospect"), quindi non
-sappiamo ancora se gli endpoint di consumo individuati nel bundle
-dell'app restituiscano vere letture del distributore o dati di
-fatturazione. Se hai un'utenza mySET con un POD attivo puoi aiutare —
-vedi
-[documentation/protocols/set-distribuzione-protocol.md](documentation/protocols/set-distribuzione-protocol.md).
-
-</details>
 
 <details>
 <summary><b>Edyna</b> (Alto Adige / Südtirol, gruppo Alperia) — non è ancora noto se espone i consumi</summary>
@@ -215,6 +211,18 @@ chiaramente invece di procedere a vuoto.
 
 </details>
 
+<details>
+<summary><b>SET Distribuzione (email + password)</b></summary>
+
+Nessuna richiesta di abilitazione preventiva e **nessun OTP**: usa le
+stesse credenziali del [portale mySET](https://myset.setdistribuzione.it/).
+Le forniture si scoprono automaticamente dall'account: se ce n'è più di
+una potrai selezionarne una o più. **Serve una fornitura elettrica attiva
+già associata all'account** (profilo diverso da "Prospect"): se il tuo
+account non ne ha, il wizard te lo dice chiaramente.
+
+</details>
+
 ## Installazione
 
 ### Tramite HACS (custom repository)
@@ -241,11 +249,12 @@ chiaramente invece di procedere a vuoto.
 
 Dopo la configurazione, puoi aggiungere/rimuovere POD in qualsiasi momento
 da **Configura** sull'integrazione (Opzioni) — per Duereti/Unareti/
-E-Distribuzione/Areti. Per **Ireti** le opzioni non hanno ancora nessuna
-voce (v1 minimale): per cambiare i POD monitorati, rimuovi e riconfigura
-l'integrazione. Per **E-Distribuzione** puoi anche cambiare l'orario della
-richiesta giornaliera (per Duereti/Unareti/Areti non serve: importano a
-mese chiuso, vedi sotto; Ireti nemmeno, vedi sotto).
+E-Distribuzione/Areti/SET Distribuzione. Per **Ireti** le opzioni non
+hanno ancora nessuna voce (v1 minimale): per cambiare i POD monitorati,
+rimuovi e riconfigura l'integrazione. Per **E-Distribuzione** e **SET
+Distribuzione** puoi anche cambiare l'orario della richiesta giornaliera
+(per Duereti/Unareti/Areti non serve: importano a mese chiuso, vedi
+sotto; Ireti nemmeno, vedi sotto).
 
 ## Cosa fa una volta configurata
 
@@ -276,6 +285,13 @@ cortesia configurabile: non sappiamo ancora quando Ireti pubblica i dati
 a ogni ciclo invece di aspettare un'ora precisa. A differenza degli altri,
 l'API accetta un intervallo di date qualsiasi in una sola chiamata: se c'è
 arretrato, un solo ciclo può recuperare più giorni insieme.
+
+**SET Distribuzione** pubblica anch'esso una curva a **15 minuti**, con
+la stessa coda di E-Distribuzione e un orario di cortesia configurabile
+(default 18:00: l'unica osservazione disponibile è che nel tardo
+pomeriggio il giorno prima è già completo). A differenza di Ireti l'API
+non accetta intervalli: ogni giorno è una chiamata a sé, quindi un
+arretrato di N giorni costa N chiamate (leggere) nel ciclo successivo.
 
 Per tutti, **lo storico pregresso non viene recuperato automaticamente**:
 si richiede con l'azione `recupera_storico` (vedi [Azioni](#azioni) sotto).
@@ -344,6 +360,15 @@ invece di giornaliera (vedi [Cosa fa una volta configurata](#cosa-fa-una-volta-c
 
 </details>
 
+<details>
+<summary><b>Entità esposte — SET Distribuzione</b></summary>
+
+Identiche a Ireti (un dispositivo "Account" più due entità per POD:
+"Ultima data disponibile" e "Consumo ultimo giorno importato"), stessa
+sorgente a 15 minuti.
+
+</details>
+
 ## Azioni
 
 **`contatore_letture.recupera_storico`** — richiede un periodo passato e lo
@@ -370,7 +395,8 @@ intervallo di date, l'intervallo scelto viene convertito nei mesi solari
 che attraversa e per ciascuno si importa il mese intero. Per Ireti
 (limite auto-imposto: 731 giorni) l'intervallo viene invece spezzato in
 blocchi da un mese circa, la dimensione dell'unica richiesta finora
-confermata su dati reali.
+confermata su dati reali. Per SET Distribuzione (limite auto-imposto:
+366 giorni) ogni giorno è una chiamata a sé.
 
 **`contatore_letture.recupera_ticket`** — solo Duereti/Unareti (gli altri
 distributori non hanno il concetto di ticket): riprende un ticket già

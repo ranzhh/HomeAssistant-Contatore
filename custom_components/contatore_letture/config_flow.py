@@ -147,6 +147,13 @@ class ContatoreLettureConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._ireti_username: str | None = None
         self._ireti_password: str | None = None
         self._ireti_pods: list[dict] = []
+        # Stato del ramo SET Distribuzione
+        self._set_session = None
+        self._set_tokens = None
+        self._set_email: str | None = None
+        self._set_password: str | None = None
+        self._set_identita: tuple[str, str] | None = None  # (fiscal_code, profile)
+        self._set_utilities: list[dict] = []
 
     # ------------------------------------------------------------------
     # Wizard ARERA: regione -> provincia -> comune -> lookup
@@ -298,6 +305,8 @@ class ContatoreLettureConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return await self.async_step_areti_user()
             if info["kind"] == "ireti":
                 return await self.async_step_ireti_user()
+            if info["kind"] == "set":
+                return await self.async_step_set_user()
             return await self.async_step_edistribuzione_user()
 
         return self.async_show_form(
@@ -1005,6 +1014,204 @@ class ContatoreLettureConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
+    # Ramo SET Distribuzione: login email/password su Azure AD B2C (nessun
+    # OTP osservato) -> POD scoperti dall'account (come edistribuzione/
+    # ireti): /profile/registration da' fiscalCode e profilo,
+    # /utility/{fiscalCode}/active elenca le forniture con POD e contractId.
+    # ------------------------------------------------------------------
+
+    async def async_step_set_user(self, user_input: dict[str, Any] | None = None):
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            from .distributors.set.auth import (
+                SetAuthClient,
+                SetAuthError,
+                SetInvalidCredentials,
+                crea_cookie_jar,
+            )
+
+            if self._set_session is None:
+                # cookie_jar: vedi auth.crea_cookie_jar - senza, B2C risponde 400.
+                self._set_session = async_create_clientsession(
+                    self.hass, cookie_jar=crea_cookie_jar()
+                )
+            auth = SetAuthClient(self._set_session)
+
+            try:
+                tokens = await auth.async_login(user_input["email"], user_input["password"])
+            except SetInvalidCredentials:
+                errors["base"] = "invalid_auth"
+            except SetAuthError:
+                _LOGGER.exception("Login SET fallito")
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001 - vedi commento in edistribuzione_user
+                _LOGGER.exception("Errore imprevisto durante il login SET")
+                errors["base"] = "cannot_connect"
+            else:
+                self._set_email = user_input["email"]
+                self._set_password = user_input["password"]
+                self._set_tokens = tokens
+                return await self.async_step_set_pod()
+
+        return self.async_show_form(
+            step_id="set_user",
+            data_schema=vol.Schema({
+                vol.Required("email"): str,
+                vol.Required("password"): str,
+            }),
+            errors=errors,
+        )
+
+    async def async_step_set_pod(self, user_input: dict[str, Any] | None = None):
+        from .distributors.set.api import SetApiClient, SetApiError, scegli_profilo
+        from .distributors.set.const import (
+            CONF_CONTRACT_IDS,
+            CONF_EMAIL,
+            CONF_FISCAL_CODE,
+            CONF_PASSWORD,
+            CONF_PODS,
+            CONF_PROFILE,
+        )
+
+        api = SetApiClient(self._set_session, self._set_tokens.access_token)
+
+        if not self._set_utilities:
+            try:
+                registrazione = await api.async_get_registration()
+                fiscal_code = registrazione["fiscalCode"]
+                profile = scegli_profilo(list(registrazione.get("profiles") or []))
+                self._set_identita = (fiscal_code, profile)
+                self._set_utilities = await api.async_get_active_utilities(fiscal_code, profile)
+            except (SetApiError, KeyError):
+                # Login gia' riuscito qui: un retry di questo stesso step non
+                # risolverebbe nulla senza rifare il login da capo - stesso
+                # principio del recupero POD E-Distribuzione/Ireti.
+                _LOGGER.exception("Errore nel recupero delle forniture SET")
+                return self.async_abort(reason="set_utilities_failed")
+            except Exception:  # noqa: BLE001 - vedi commento in edistribuzione_user
+                _LOGGER.exception("Errore imprevisto nel recupero delle forniture SET")
+                return self.async_abort(reason="set_utilities_failed")
+
+        pod_codes = [u["podPdr"] for u in self._set_utilities]
+        if not pod_codes:
+            # E' proprio la situazione di partenza di questa ricerca: un
+            # account mySET "Prospect", senza nessuna fornitura associata.
+            # Non e' un errore dell'integrazione, va risolto sul portale.
+            return self.async_abort(reason="no_set_pods_associated")
+
+        def crea_entry(pods: list[str]):
+            titolo = pods[0] if len(pods) == 1 else f"{len(pods)} POD"
+            fiscal_code, profile = self._set_identita
+            return self.async_create_entry(
+                title=f"SET Distribuzione ({titolo})",
+                data={
+                    "distributor": "set",
+                    "comune": self._comune_name,
+                    CONF_EMAIL: self._set_email,
+                    CONF_PASSWORD: self._set_password,
+                    CONF_PODS: pods,
+                    CONF_FISCAL_CODE: fiscal_code,
+                    CONF_PROFILE: profile,
+                    CONF_CONTRACT_IDS: {
+                        u["podPdr"]: str(u["contractId"])
+                        for u in self._set_utilities
+                        if u["podPdr"] in pods
+                    },
+                },
+            )
+
+        # Con un solo POD sull'account non serve far scegliere - come
+        # edistribuzione/ireti.
+        if len(pod_codes) == 1:
+            return crea_entry(pod_codes)
+
+        if user_input is not None:
+            scelti = user_input[CONF_PODS]
+            if not scelti:
+                return self.async_show_form(
+                    step_id="set_pod",
+                    data_schema=self._schema_set_pod(),
+                    errors={"pods": "nessun_pod_selezionato"},
+                )
+            return crea_entry(scelti)
+
+        return self.async_show_form(step_id="set_pod", data_schema=self._schema_set_pod())
+
+    def _schema_set_pod(self) -> vol.Schema:
+        from .distributors.set.const import CONF_PODS
+
+        pod_codes = [u["podPdr"] for u in self._set_utilities]
+        opzioni = [
+            {
+                "value": u["podPdr"],
+                "label": (
+                    f"{u['podPdr']} ({u['utilityAddress']})"
+                    if u.get("utilityAddress") else u["podPdr"]
+                ),
+            }
+            for u in self._set_utilities
+        ]
+        return vol.Schema({
+            vol.Required(CONF_PODS, default=pod_codes): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=opzioni, multiple=True)
+            )
+        })
+
+    # ------------------------------------------------------------------
+    # Reauth SET: stesso login dell'onboarding, niente riselezione POD (la
+    # entry esistente ha gia' i suoi) - aggiorna email/password sulla
+    # entry esistente. Nessun OTP, quindi un solo step (come areti/ireti).
+    # ------------------------------------------------------------------
+
+    async def async_step_set_reauth_user(self, user_input: dict[str, Any] | None = None):
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            from .distributors.set.auth import (
+                SetAuthClient,
+                SetAuthError,
+                SetInvalidCredentials,
+                crea_cookie_jar,
+            )
+            from .distributors.set.const import CONF_EMAIL, CONF_PASSWORD
+
+            session = async_create_clientsession(self.hass, cookie_jar=crea_cookie_jar())
+            auth = SetAuthClient(session)
+
+            try:
+                await auth.async_login(user_input["email"], user_input["password"])
+            except SetInvalidCredentials:
+                errors["base"] = "invalid_auth"
+            except SetAuthError:
+                _LOGGER.exception("Login SET fallito (reauth)")
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001 - vedi commento in edistribuzione_user
+                _LOGGER.exception("Errore imprevisto durante il login SET (reauth)")
+                errors["base"] = "cannot_connect"
+            else:
+                nuovi_dati = {
+                    **self._reauth_entry.data,
+                    CONF_EMAIL: user_input["email"],
+                    CONF_PASSWORD: user_input["password"],
+                }
+                self.hass.config_entries.async_update_entry(self._reauth_entry, data=nuovi_dati)
+                await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+
+        return self.async_show_form(
+            step_id="set_reauth_user",
+            data_schema=vol.Schema({
+                vol.Required("email"): str,
+                vol.Required("password"): str,
+            }),
+            errors=errors,
+            description_placeholders={
+                "pod_correnti": ", ".join(self._reauth_entry.data.get(CONF_PODS, []))
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Reauth E-Distribuzione: stesso login+OTP dell'onboarding iniziale,
     # ma niente selezione POD (la entry esistente ha gia' i suoi) - alla
     # fine aggiorna il refresh_token sulla entry esistente invece di
@@ -1145,6 +1352,8 @@ class ContatoreLettureConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_areti_reauth_user()
         if kind == "ireti":
             return await self.async_step_ireti_reauth_user()
+        if kind == "set":
+            return await self.async_step_set_reauth_user()
         return self.async_abort(reason="reauth_not_supported")
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
@@ -1192,8 +1401,10 @@ class ContatoreLettureOptionsFlow(config_entries.OptionsFlow):
     Generico: legge il distributore dalla config entry (self.config_entry.data)
     per sapere quale modulo usare per validare i POD. Per Ireti (kind non
     ancora gestito qui sotto) non offre nulla di specifico oggi: solo un
-    abort chiaro.
+    abort chiaro. Per SET: aggiungi/rimuovi POD dall'account + orario.
     """
+
+    _set_utilities_opzioni: list[dict] = []
 
     def _modulo(self):
         distributor_key = self.config_entry.data["distributor"]
@@ -1229,6 +1440,14 @@ class ContatoreLettureOptionsFlow(config_entries.OptionsFlow):
                 step_id="init",
                 menu_options=["areti_aggiungi_pod", "areti_rimuovi_pod"],
             )
+        if kind == "set":
+            # "orario" e' lo stesso step di E-Distribuzione (stessa chiave
+            # "ora_richiesta"): qui serve perche' non sappiamo ancora da che
+            # ora del giorno SET pubblica il giorno prima (vedi set/const.py).
+            return self.async_show_menu(
+                step_id="init",
+                menu_options=["set_aggiungi_pod", "set_rimuovi_pod", "orario"],
+            )
         return self.async_abort(reason="options_not_supported")
 
     async def async_step_orario(self, user_input: dict[str, Any] | None = None):
@@ -1238,7 +1457,12 @@ class ContatoreLettureOptionsFlow(config_entries.OptionsFlow):
                 title="", data={**self.config_entry.options, CONF_ORA_RICHIESTA: ora}
             )
 
-        attuale = self.config_entry.options.get(CONF_ORA_RICHIESTA, ORA_MINIMA_RICHIESTA)
+        default_orario = ORA_MINIMA_RICHIESTA
+        if DISTRIBUTOR_REGISTRY[self.config_entry.data["distributor"]]["kind"] == "set":
+            from .distributors.set.const import ORA_MINIMA_RICHIESTA as ORA_MINIMA_SET
+
+            default_orario = ORA_MINIMA_SET
+        attuale = self.config_entry.options.get(CONF_ORA_RICHIESTA, default_orario)
         return self.async_show_form(
             step_id="orario",
             data_schema=vol.Schema({
@@ -1532,3 +1756,121 @@ class ContatoreLettureOptionsFlow(config_entries.OptionsFlow):
             step_id="areti_rimuovi_pod",
             data_schema=self._schema_rimuovi_edistribuzione(pods),
         )
+
+    # ------------------------------------------------------------------
+    # SET Distribuzione: aggiungi/rimuovi POD (dall'account, come
+    # E-Distribuzione: /active elenca tutte le forniture, si scelgono
+    # quelle non ancora configurate). Il login viene rifatto con le
+    # credenziali salvate (nessun refresh_token persistito: dura 24h, non
+    # vale la pena salvarlo).
+    # ------------------------------------------------------------------
+
+    async def async_step_set_aggiungi_pod(self, user_input: dict[str, Any] | None = None):
+        from .distributors.set.api import SetApiClient, scegli_profilo
+        from .distributors.set.auth import SetAuthClient, crea_cookie_jar
+        from .distributors.set.const import (
+            CONF_CONTRACT_IDS,
+            CONF_EMAIL,
+            CONF_PASSWORD,
+            CONF_PODS,
+        )
+
+        pods_attuali = list(self.config_entry.data.get(CONF_PODS, []))
+
+        if user_input is not None:
+            nuovi = user_input.get("pods_da_aggiungere", [])
+            if not nuovi:
+                return self.async_abort(reason="nessun_pod_selezionato")
+            pods_finali = pods_attuali + [p for p in nuovi if p not in pods_attuali]
+            contract_ids = dict(self.config_entry.data.get(CONF_CONTRACT_IDS) or {})
+            contract_ids.update(
+                {u["podPdr"]: str(u["contractId"]) for u in self._set_utilities_opzioni}
+            )
+            new_data = {
+                **self.config_entry.data,
+                CONF_PODS: pods_finali,
+                CONF_CONTRACT_IDS: contract_ids,
+            }
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        session = async_create_clientsession(self.hass, cookie_jar=crea_cookie_jar())
+        try:
+            tokens = await SetAuthClient(session).async_login(
+                self.config_entry.data[CONF_EMAIL], self.config_entry.data[CONF_PASSWORD]
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Login SET fallito nelle opzioni")
+            return self.async_abort(reason="set_login_failed")
+
+        api = SetApiClient(session, tokens.access_token)
+        try:
+            registrazione = await api.async_get_registration()
+            profile = scegli_profilo(list(registrazione.get("profiles") or []))
+            self._set_utilities_opzioni = await api.async_get_active_utilities(
+                registrazione["fiscalCode"], profile
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Recupero forniture SET fallito nelle opzioni")
+            return self.async_abort(reason="set_utilities_failed")
+
+        disponibili = [u for u in self._set_utilities_opzioni if u["podPdr"] not in pods_attuali]
+        if not disponibili:
+            return self.async_abort(reason="nessun_pod_da_aggiungere")
+
+        opzioni = [
+            {
+                "value": u["podPdr"],
+                "label": (
+                    f"{u['podPdr']} ({u['utilityAddress']})"
+                    if u.get("utilityAddress") else u["podPdr"]
+                ),
+            }
+            for u in disponibili
+        ]
+        return self.async_show_form(
+            step_id="set_aggiungi_pod",
+            data_schema=vol.Schema({
+                vol.Required("pods_da_aggiungere", default=[]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=opzioni, multiple=True)
+                )
+            }),
+            description_placeholders={
+                "pod_correnti": ", ".join(pods_attuali) or "nessuno",
+            },
+        )
+
+    async def async_step_set_rimuovi_pod(self, user_input: dict[str, Any] | None = None):
+        from .distributors.set.const import CONF_PODS
+
+        pods = list(self.config_entry.data.get(CONF_PODS, []))
+        if not pods:
+            return self.async_abort(reason="nessun_pod")
+
+        if user_input is not None:
+            da_rimuovere = set(user_input.get("pods_da_rimuovere", []))
+            if len(da_rimuovere) >= len(pods):
+                return self.async_show_form(
+                    step_id="set_rimuovi_pod",
+                    data_schema=self._schema_rimuovi_set(pods),
+                    errors={"pods_da_rimuovere": "non_puoi_rimuoverli_tutti"},
+                )
+            pods_rimasti = [p for p in pods if p not in da_rimuovere]
+            new_data = {**self.config_entry.data, CONF_PODS: pods_rimasti}
+            self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        return self.async_show_form(
+            step_id="set_rimuovi_pod",
+            data_schema=self._schema_rimuovi_set(pods),
+        )
+
+    @staticmethod
+    def _schema_rimuovi_set(pods: list[str]) -> vol.Schema:
+        return vol.Schema({
+            vol.Required("pods_da_rimuovere", default=[]): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=pods, multiple=True)
+            )
+        })

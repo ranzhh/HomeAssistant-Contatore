@@ -176,6 +176,13 @@ con fixture basate su payload **reali**, non inventati, dove possibile).
   `documentation/protocols/areti-protocol.md`). Il "Gotcha TLS" (intermedio DigiCert
   mancante, `auth.build_ssl_context`) va verificato di nuovo se cambia il
   certificato del sito.
+- **Cambi a SET Distribuzione**: quasi tutto vive in `distributors/set/`.
+  Se tocchi `auth.py` (login Azure AD B2C: la pagina `/authorize` e il
+  blocco `SETTINGS` sono di Microsoft, non di SET, e possono cambiare) o
+  il parsing delle viste di consumo, verifica con
+  `scripts/verify_set_login.py` (credenziali da variabili d'ambiente,
+  non scrive nulla su disco) prima di aprire una PR - vedi
+  `documentation/protocols/set-distribuzione-protocol.md`.
 - **`strings.json`/`translations/it.json`**: vanno sempre tenuti
   **identici** (l'italiano è al momento l'unica lingua supportata,
   duplicata in entrambi i file). Se aggiungi/cambi una chiave in uno,
