@@ -42,19 +42,29 @@ tests/
     test_statistics.py                  # aggregazione oraria (funzioni pure)
     test_coordinator.py                 # ciclo automatico, ripiego podType, recupera_storico
     test_coordinator_coda.py            # coda per-POD (stesso meccanismo di edistribuzione)
+  set/
+    conftest.py                        # harness: make_set_coordinator
+    test_auth.py                        # non richiede HA
+    test_api.py                         # non richiede HA
+    test_excel.py                       # parser dell'export Excel mensile
+    test_statistics.py                  # aggregazione oraria (funzioni pure)
+    test_statistics_recorder.py         # import consecutivi contro il recorder vero
+    test_coordinator.py                 # ciclo automatico, cache dei token, recupera_storico
+    test_coordinator_coda.py            # coda per-POD (stesso meccanismo di ireti)
 ```
 
 ## Test senza Home Assistant installato
 
-`pcf_common/api.py`, `edistribuzione/auth.py`/`api.py` e
-`ireti/auth.py`/`api.py` non importano `homeassistant.*` (solo `aiohttp`
+`pcf_common/api.py`, `edistribuzione/auth.py`/`api.py`,
+`ireti/auth.py`/`api.py` e `set/auth.py`/`api.py` non importano `homeassistant.*` (solo `aiohttp`
 + libreria standard). I relativi test li caricano direttamente, quindi
 girano anche senza il pacchetto HA:
 
 ```bash
 pytest tests/pcf_common/test_api.py tests/pcf_common/test_api_errori.py \
        tests/edistribuzione/test_auth.py tests/edistribuzione/test_api.py \
-       tests/ireti/test_auth.py tests/ireti/test_api.py
+       tests/ireti/test_auth.py tests/ireti/test_api.py \
+       tests/set/test_auth.py tests/set/test_api.py
 ```
 
 Tutto il resto richiede `pytest-homeassistant-custom-component`.
