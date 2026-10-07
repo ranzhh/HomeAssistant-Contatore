@@ -164,6 +164,8 @@ class SetAuthClient:
             raise SetAuthError(f"Errore di trasporto durante il login SET: {err}") from err
 
     async def _login(self, email: str, password: str) -> SetTokens:
+        # Col cookie SSO di rememberMe /authorize salta il form e rimanda al portale.
+        self._session.cookie_jar.clear()
         verifier, challenge = _pkce()
         state = secrets.token_urlsafe(16)
         nonce = secrets.token_urlsafe(16)

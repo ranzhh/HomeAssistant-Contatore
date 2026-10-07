@@ -115,6 +115,7 @@ class _Sessione:
     token. Ogni risposta e' sovrascrivibile dal singolo test."""
 
     def __init__(self):
+        self.cookie_jar = auth.crea_cookie_jar()
         self.richieste: list[dict] = []
         self.risposte = {
             "authorize": _Risposta(200, testo=PAGINA_AUTHORIZE),
@@ -268,6 +269,8 @@ class TestAsyncLogin:
     @pytest.mark.asyncio
     async def test_errore_di_trasporto_solleva_autherror(self):
         class _SessioneRotta:
+            cookie_jar = auth.crea_cookie_jar()
+
             def get(self, url, **kw):
                 raise aiohttp.ClientConnectionError("connessione rifiutata")
 
@@ -276,7 +279,8 @@ class TestAsyncLogin:
 
 
 class TestCookieJar:
-    def test_jar_che_quota_i_cookie_viene_rifiutato(self):
+    @pytest.mark.asyncio
+    async def test_jar_che_quota_i_cookie_viene_rifiutato(self):
         """Il jar di default di aiohttp (quote_cookie=True) fa rispondere
         B2C con 400 a ogni richiesta successiva alla prima - verificato dal
         vivo il 30/09/2026: meglio fallire subito con una spiegazione."""
@@ -294,6 +298,26 @@ class TestCookieJar:
     @pytest.mark.asyncio
     async def test_crea_cookie_jar_non_quota(self):
         assert auth.crea_cookie_jar()._quote_cookie is False
+
+    @pytest.mark.asyncio
+    async def test_secondo_login_nella_stessa_sessione(self):
+        """Con il cookie di sessione B2C lasciato da rememberMe, /authorize
+        salta il form e rimanda al portale: il login successivo (refresh
+        token scaduto dopo 24 ore) deve ripartire da una sessione pulita."""
+        portale = _Risposta(200, testo="<html><body>myset</body></html>")
+
+        class _SessioneSso(_Sessione):
+            def _instrada(self, metodo, url, **kw):
+                if "authorize" in url and len(self.cookie_jar):
+                    return portale
+                if "confirmed" in url:
+                    self.cookie_jar.update_cookies({"x-ms-cpim-sso": "sessione-di-fantasia"})
+                return super()._instrada(metodo, url, **kw)
+
+        client = auth.SetAuthClient(_SessioneSso())
+        await client.async_login("utente@example.com", "segreto")
+        tokens = await client.async_login("utente@example.com", "segreto")
+        assert tokens.access_token == "access-di-fantasia"
 
 
 class TestAsyncRefresh:
