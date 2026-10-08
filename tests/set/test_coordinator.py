@@ -70,9 +70,14 @@ async def coordinator(make_set_coordinator):
 def _no_statistiche(monkeypatch):
     """Nessun recorder nei test: import e lettura statistiche sostituiti."""
     importa = AsyncMock(return_value=None)
-    monkeypatch.setattr(mod, "async_import_curva_giorno", importa)
+    monkeypatch.setattr(mod, "async_import_curve", importa)
     monkeypatch.setattr(mod, "async_get_ultima_data_disponibile", AsyncMock(return_value=None))
     return importa
+
+
+def _importati(importa) -> list[date]:
+    """Giorni passati all'import, su tutte le chiamate."""
+    return sorted(g for c in importa.await_args_list for g in c.args[2])
 
 
 def _api(viste: dict[date, list] | None = None, errore=None):
@@ -199,7 +204,7 @@ class TestUpdateData:
         assert dati["by_pod"][POD_A]["ultimo_giorno_importato"] == "2026-09-17"
         assert dati["by_pod"][POD_A]["kwh_ultimo_giorno_importato"] == pytest.approx(9.6)
         assert "2026-09-17" not in code.get(POD_A, {})
-        _no_statistiche.assert_awaited_once()
+        assert _importati(_no_statistiche) == [atteso]
 
     async def test_giorno_mancante_va_in_coda(self, coordinator, _no_statistiche):
         coordinator._async_login = AsyncMock(return_value=_api({}))
@@ -357,7 +362,7 @@ class TestRecuperaStorico:
             CF, CONTRACT_A, POD_A, PROFILE, 2026, 7
         )
         api.async_get_consumption_day.assert_not_awaited()
-        assert _no_statistiche.await_count == 2  # il 3 luglio non e' nel file: non importato
+        assert _importati(_no_statistiche) == [g1, g2]  # il 3 luglio non e' nel file
 
     async def test_excel_assente_404_non_ricade_sulla_vista_giorno(
         self, coordinator, _no_statistiche
@@ -391,9 +396,9 @@ class TestRecuperaStorico:
         await coordinator.async_recupera_storico(g, date(2026, 7, 2))
 
         assert api.async_get_consumption_day.await_count == 2
-        _no_statistiche.assert_awaited_once()
+        assert _importati(_no_statistiche) == [g]
 
-    async def test_successo_importa_un_giorno_per_chiamata(self, coordinator, _no_statistiche):
+    async def test_successo_importa_i_giorni_pubblicati(self, coordinator, _no_statistiche):
         viste = {g: _vista_giorno(g) for g in (date(2026, 7, 1), date(2026, 7, 2))}
         api = _api(viste)
         coordinator._async_login = AsyncMock(return_value=api)
@@ -401,4 +406,4 @@ class TestRecuperaStorico:
         await coordinator.async_recupera_storico(date(2026, 7, 1), date(2026, 7, 3))
 
         assert api.async_get_consumption_day.await_count == 3
-        assert _no_statistiche.await_count == 2
+        assert _importati(_no_statistiche) == sorted(viste)

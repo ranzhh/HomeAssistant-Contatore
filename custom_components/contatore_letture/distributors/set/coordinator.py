@@ -80,7 +80,7 @@ from .const import (
 from .excel import SetExcelError, parse_excel_mensile
 from .statistics import (
     async_get_ultima_data_disponibile,
-    async_import_curva_giorno,
+    async_import_curve,
     kwh_del_giorno,
 )
 
@@ -363,8 +363,7 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
         by_pod: dict[str, dict] = {}
         for pod in self.pods:
             giorni = richieste[pod]
-            kwh_ultimo_giorno_importato = None
-            ultimo_giorno_importato = None
+            pubblicati: dict[date, list[dict[str, Any]]] = {}
 
             for indice, giorno in enumerate(giorni):
                 try:
@@ -373,6 +372,7 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
                     # I giorni non ancora chiesti vanno in coda invece di
                     # andare persi: al ciclo successivo 'atteso' sarebbe
                     # già avanzato.
+                    await self._async_importa(pod, pubblicati)
                     for rimasto in giorni[indice:]:
                         self._accoda_giorno(pod, rimasto)
                     raise UpdateFailed(
@@ -385,11 +385,12 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
                     self._accoda_giorno(pod, giorno)
                     continue
 
-                await async_import_curva_giorno(self.hass, pod, giorno, vista)
-                self._rimuovi_dalla_coda(pod, [giorno])
-                if ultimo_giorno_importato is None or giorno.isoformat() > ultimo_giorno_importato:
-                    ultimo_giorno_importato = giorno.isoformat()
-                    kwh_ultimo_giorno_importato = kwh_del_giorno(vista)
+                pubblicati[giorno] = vista
+
+            await self._async_importa(pod, pubblicati)
+            ultimo = max(pubblicati, default=None)
+            ultimo_giorno_importato = ultimo.isoformat() if ultimo else None
+            kwh_ultimo_giorno_importato = kwh_del_giorno(pubblicati[ultimo]) if ultimo else None
 
             ultima_data_disponibile = await async_get_ultima_data_disponibile(self.hass, pod)
             by_pod[pod] = {
@@ -401,6 +402,14 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
             }
 
         return {"by_pod": by_pod}
+
+    async def _async_importa(self, pod: str, viste: dict[date, list[dict[str, Any]]]) -> None:
+        """Una sola scrittura per tutti i giorni (vedi async_import_curve),
+        poi fuori dalla coda."""
+        if not viste:
+            return
+        await async_import_curve(self.hass, pod, viste)
+        self._rimuovi_dalla_coda(pod, sorted(viste))
 
     async def _async_mesi_senza_dettaglio(
         self, api: SetApiClient, pod: str, giorni: list[date]
@@ -527,7 +536,6 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
         giorni_importati = 0
 
         for pod_corrente in pod_da_recuperare:
-            trovati = 0
             mesi_da_saltare = await self._async_mesi_senza_dettaglio(api, pod_corrente, giorni)
             if mesi_da_saltare:
                 _LOGGER.info(
@@ -536,33 +544,37 @@ class SetCoordinator(DataUpdateCoordinator[dict]):
                     pod_corrente, ", ".join(f"{a}-{m:02d}" for a, m in sorted(mesi_da_saltare)),
                 )
             mesi = sorted({(g.year, g.month) for g in giorni} - mesi_da_saltare)
-            for anno, mese in mesi:
-                giorni_del_mese = [g for g in giorni if (g.year, g.month) == (anno, mese)]
-                # 1. Excel mensile: tutta la curva del mese in una chiamata.
-                viste = await self._async_viste_da_excel(api, pod_corrente, anno, mese)
-                # 2. Ripiego giorno per giorno solo se l'Excel non e' utilizzabile.
-                if viste is None:
-                    viste = {}
+            da_importare: dict[date, list[dict[str, Any]]] = {}
+            try:
+                for anno, mese in mesi:
+                    giorni_del_mese = [g for g in giorni if (g.year, g.month) == (anno, mese)]
+                    # 1. Excel mensile: tutta la curva del mese in una chiamata.
+                    viste = await self._async_viste_da_excel(api, pod_corrente, anno, mese)
+                    # 2. Ripiego giorno per giorno solo se l'Excel non e' utilizzabile.
+                    if viste is None:
+                        viste = {}
+                        for giorno in giorni_del_mese:
+                            try:
+                                api, vista = await self._async_vista_giorno(
+                                    api, pod_corrente, giorno
+                                )
+                            except (SetApiError, SetAuthError) as err:
+                                _LOGGER.warning(
+                                    "POD %s: errore recuperando il giorno %s: %s",
+                                    pod_corrente, giorno, err,
+                                )
+                                fallimenti.append(f"{pod_corrente}/{giorno}: {err}")
+                                continue
+                            if giorno_pubblicato(vista):
+                                viste[giorno] = vista
                     for giorno in giorni_del_mese:
-                        try:
-                            api, vista = await self._async_vista_giorno(api, pod_corrente, giorno)
-                        except (SetApiError, SetAuthError) as err:
-                            _LOGGER.warning(
-                                "POD %s: errore recuperando il giorno %s: %s",
-                                pod_corrente, giorno, err,
-                            )
-                            fallimenti.append(f"{pod_corrente}/{giorno}: {err}")
-                            continue
-                        if giorno_pubblicato(vista):
-                            viste[giorno] = vista
-                for giorno in giorni_del_mese:
-                    vista = viste.get(giorno)
-                    if not vista or not giorno_pubblicato(vista):
-                        continue
-                    await async_import_curva_giorno(self.hass, pod_corrente, giorno, vista)
-                    self._rimuovi_dalla_coda(pod_corrente, [giorno])
-                    trovati += 1
-                    giorni_importati += 1
+                        vista = viste.get(giorno)
+                        if vista and giorno_pubblicato(vista):
+                            da_importare[giorno] = vista
+            finally:
+                await self._async_importa(pod_corrente, da_importare)
+            trovati = len(da_importare)
+            giorni_importati += trovati
 
             _LOGGER.info(
                 "POD %s: recupero storico completato, %d giorni trovati nel periodo %s - %s",

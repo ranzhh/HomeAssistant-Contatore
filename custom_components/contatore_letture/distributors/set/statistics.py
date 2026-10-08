@@ -153,30 +153,35 @@ def _aggrega_per_ora(
     return sorted(bucket.items())
 
 
-async def async_import_curva_giorno(
-    hass: HomeAssistant, pod: str, giorno: date, consumptions: list[dict[str, Any]]
+async def async_import_curve(
+    hass: HomeAssistant, pod: str, viste: dict[date, list[dict[str, Any]]]
 ) -> date | None:
-    """Importa la vista giorno di un POD come external statistics (bucket
+    """Importa le viste giorno di un POD come external statistics (bucket
     orari), con la stessa fusione/ricalcolo cumulativo di tutti gli altri
-    distributori (statistics_common). Restituisce la data locale
+    distributori (statistics_common), in UNA scrittura sola.
+
+    La scrittura del recorder e' solo accodata: una seconda fusione subito
+    dopo rileggerebbe la serie senza i giorni appena scritti e ricomincerebbe
+    la somma progressiva da zero. Per questo tutti i giorni di un ciclo (o di
+    un recupero storico) passano di qui insieme. Restituisce la data locale
     dell'ultimo punto della serie risultante, o None se non c'era nulla da
     importare."""
-    if not consumptions:
-        _LOGGER.debug("Nessun dato curva da importare per POD %s, giorno %s", pod, giorno)
-        return None
+    nuove_ore: dict[datetime, float] = {}
+    for giorno, consumptions in sorted(viste.items()):
+        ore = dict(_aggrega_per_ora(giorno, consumptions))
+        if not ore:
+            _LOGGER.warning(
+                "POD %s, giorno %s: nessun campione valido nella risposta (schema cambiato "
+                "rispetto a quello confermato il 30/09/2026?). Risposta grezza: %r",
+                pod, giorno, consumptions,
+            )
+        nuove_ore.update(ore)
 
-    statistic_id = sanitize_statistic_id(pod)
-    nuove_ore = dict(_aggrega_per_ora(giorno, consumptions))
     if not nuove_ore:
-        _LOGGER.warning(
-            "POD %s, giorno %s: nessun campione valido nella risposta (schema cambiato "
-            "rispetto a quello confermato il 30/09/2026?). Risposta grezza: %r",
-            pod, giorno, consumptions,
-        )
         return None
 
     return await async_scrivi_serie_oraria(
-        hass, pod, statistic_id, f"SET Distribuzione {pod}", nuove_ore
+        hass, pod, sanitize_statistic_id(pod), f"SET Distribuzione {pod}", nuove_ore
     )
 
 

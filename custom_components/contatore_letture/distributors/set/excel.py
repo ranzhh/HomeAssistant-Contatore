@@ -18,7 +18,7 @@ virgola decimale. Si converte ogni riga in un quarto d'ora e si
 ricompongono elementi "ora" nella STESSA forma della vista giorno JSON
 ({year, month, day, hour, quarters[4], total, estimated, kConstant}),
 cosi' l'import passa dall'unico percorso gia' testato
-(statistics.async_import_curva_giorno).
+(statistics.async_import_curve).
 
 openpyxl e' una dipendenza dichiarata nel manifest (a differenza di
 pcf_common, dove l'import xlsx e' una utility mai usata dal coordinator).

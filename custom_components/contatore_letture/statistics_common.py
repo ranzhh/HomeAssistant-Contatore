@@ -112,8 +112,6 @@ async def async_scrivi_serie_oraria(
     }
 
     async_add_external_statistics(hass, metadata, stats)
-    # La scrittura e' solo accodata: la prossima lettura deve gia' vederla.
-    await get_instance(hass).async_block_till_done()
     ultima_data = dt_util.as_local(stats[-1]["start"]).date()
     _LOGGER.info(
         "POD %s (%s): %d ore nuove/aggiornate, serie riscritta con %d ore totali "
