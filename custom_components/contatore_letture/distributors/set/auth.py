@@ -70,6 +70,10 @@ _LOGGER = logging.getLogger(__name__)
 _RE_SETTINGS = re.compile(r"var\s+SETTINGS\s*=\s*(\{.*?\})\s*;", re.DOTALL)
 
 
+# Nome utente o password non validi, utente non trovato.
+_CODICI_CREDENZIALI = frozenset({"AADB2C90052", "AADB2C90053", "AADB2C90054"})
+
+
 class SetAuthError(Exception):
     """Errore generico di autenticazione (rete, pagina inattesa, flusso
     interrotto da qualcosa che non sappiamo gestire)."""
@@ -241,7 +245,11 @@ class SetAuthClient:
             # e errorCode/message - verificato dal vivo il 30/09/2026:
             # {"status":"400","errorCode":"AADB2C90053","message":"Credenziali non valide."}
             messaggio = corpo.get("message") or corpo.get("errorCode") or corpo
-            raise SetInvalidCredentials(f"Login SET rifiutato: {messaggio}")
+            # Solo questi codici sono credenziali sbagliate: il resto (es. la
+            # manutenzione del 12/10/2026) va riprovato, non diventa un reauth.
+            if corpo.get("errorCode") in _CODICI_CREDENZIALI:
+                raise SetInvalidCredentials(f"Login SET rifiutato: {messaggio}")
+            raise SetAuthError(f"Login SET non riuscito: {messaggio}")
 
         # 3. conferma -> 302 con il code nel fragment
         async with self._session.get(

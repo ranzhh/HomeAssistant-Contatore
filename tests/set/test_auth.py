@@ -215,13 +215,29 @@ class TestAsyncLogin:
         sessione = _Sessione()
         sessione.risposte["SelfAsserted"] = _Risposta(
             200,
-            corpo={"status": "400", "errorCode": "UserNotFound",
-                   "message": "Nome utente o password non validi."},
+            corpo={"status": "400", "errorCode": "AADB2C90053",
+                   "message": "Credenziali non valide."},
         )
-        with pytest.raises(auth.SetInvalidCredentials, match="non validi"):
+        with pytest.raises(auth.SetInvalidCredentials, match="non valide"):
             await auth.SetAuthClient(sessione).async_login("utente@example.com", "sbagliata")
         # non si va avanti dopo il rifiuto
         assert not any("confirmed" in r["url"] for r in sessione.richieste)
+
+    @pytest.mark.asyncio
+    async def test_manutenzione_non_e_una_password_sbagliata(self):
+        """Il rifiuto del 12/10/2026: con le credenziali giuste. Se diventa
+        un reauth il polling si ferma finche' qualcuno non interviene."""
+        sessione = _Sessione()
+        sessione.risposte["SelfAsserted"] = _Risposta(
+            200,
+            corpo={"status": "400",
+                   "message": "Servizio momentaneamente indisponibile causa manutenzione "
+                              "programmata. Il servizio tornerà disponibile alle ore 23:45 "
+                              "del giorno 12/10/2026."},
+        )
+        with pytest.raises(auth.SetAuthError, match="manutenzione") as errore:
+            await auth.SetAuthClient(sessione).async_login("utente@example.com", "segreto")
+        assert not isinstance(errore.value, auth.SetInvalidCredentials)
 
     @pytest.mark.asyncio
     async def test_pagina_senza_settings_solleva_autherror(self):
